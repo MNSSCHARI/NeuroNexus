@@ -228,5 +228,36 @@ router.delete('/:projectId', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/projects/:projectId/test-search-quality
+ * Test vector search quality for a project
+ */
+router.post('/:projectId/test-search-quality', async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const { testQueries } = req.body; // Optional: custom test queries
+
+    // Verify project exists
+    const project = await projectStorage.getProject(projectId);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    // Run quality test
+    const results = await embeddingService.testVectorSearchQuality(projectId, testQueries);
+
+    res.json({
+      success: true,
+      ...results
+    });
+  } catch (error) {
+    console.error('Error testing search quality:', error);
+    res.status(500).json({ 
+      error: 'Failed to test search quality', 
+      message: error.message 
+    });
+  }
+});
+
 module.exports = router;
 

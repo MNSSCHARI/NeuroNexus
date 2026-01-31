@@ -12,12 +12,92 @@ const USE_MOCK_AI = process.env.USE_MOCK_AI === 'true';
 
 // Initialize Google Gemini client (only if not using mock mode)
 let genAI = null;
-let model = null;
 if (!USE_MOCK_AI) {
   genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  // Use gemini-3-flash-preview (most commonly available model)
-  // If this doesn't work, check available models in Google AI Studio
-  model = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
+}
+
+// Gemini model fallback list (in order of preference)
+// These models are verified to be available via API as of Jan 2026
+const GEMINI_MODELS = [
+  'gemini-2.5-flash',      // Primary model (latest, fast, recommended)
+  'gemini-2.0-flash',      // Fallback 1 (stable)
+  'gemini-2.5-pro'         // Fallback 2 (most capable, slower)
+];
+
+/**
+ * Generate content with Gemini using fallback models and retry logic
+ * @param {string} prompt - The prompt to send
+ * @param {number} maxRetries - Maximum number of retries per model
+ * @returns {Promise<{result: any, usedModel: string}>}
+ */
+async function generateWithGeminiFallback(prompt, maxRetries = 3) {
+  if (!genAI) {
+    throw new Error('Gemini client not initialized');
+  }
+
+  const errors = [];
+  
+  for (const modelName of GEMINI_MODELS) {
+    let lastError = null;
+    
+    // Retry logic with exponential backoff for each model
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const delay = attempt > 0 ? Math.min(1000 * Math.pow(2, attempt - 1), 10000) : 0;
+        
+        if (delay > 0) {
+          console.log(`⏳ Retrying ${modelName} after ${delay}ms (attempt ${attempt + 1}/${maxRetries})...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+        
+        console.log(`🔄 Trying model: ${modelName}${attempt > 0 ? ` (retry ${attempt + 1})` : ''}`);
+        const model = genAI.getGenerativeModel({ model: modelName });
+        const result = await model.generateContent(prompt);
+        
+        console.log(`✅ Successfully used model: ${modelName}`);
+        return { result, usedModel: modelName };
+        
+      } catch (error) {
+        lastError = error;
+        const errorMsg = error.message || String(error);
+        
+        // Log the error
+        if (attempt === 0) {
+          console.log(`❌ ${modelName} failed: ${errorMsg}`);
+        } else {
+          console.log(`❌ ${modelName} retry ${attempt + 1} failed: ${errorMsg}`);
+        }
+        
+        errors.push({ model: modelName, attempt: attempt + 1, error: errorMsg });
+        
+        // If it's a model not found error, don't retry this model
+        if (errorMsg.includes('not found') || errorMsg.includes('404')) {
+          console.log(`⏭️  Skipping ${modelName} (model not available)`);
+          break;
+        }
+        
+        // For other errors, continue retrying
+        if (attempt < maxRetries - 1) {
+          continue;
+        }
+      }
+    }
+    
+    // If we exhausted retries for this model, log and try next
+    if (lastError) {
+      console.log(`⚠️  Exhausted retries for ${modelName}, trying next model...`);
+    }
+  }
+  
+  // All models failed
+  const triedModels = GEMINI_MODELS.join(', ');
+  const errorSummary = errors.map(e => `${e.model} (attempt ${e.attempt}): ${e.error}`).join('; ');
+  
+  throw new Error(
+    `All Gemini models failed. Tried: ${triedModels}. ` +
+    `Errors: ${errorSummary}. ` +
+    `Please check your API key permissions and available models in Google AI Studio.`
+  );
 }
 
 // ========== MIDDLEWARE ==========
@@ -439,49 +519,14 @@ app.post('/api/generate', async (req, res) => {
       const userPrompt = getModePrompt(mode, inputText);
       const fullPrompt = `${SYSTEM_PROMPT}\n\n${userPrompt}`;
 
-      // Call Google Gemini API
+      // Call Google Gemini API with fallback and retry logic
       console.log('Calling Google Gemini API...');
       
-      // Try to generate content with fallback to alternative models if needed
-      let result;
-      let usedModel = 'gemini-3-flash-preview';
-      
-      try {
-        result = await model.generateContent(fullPrompt);
-      } catch (modelError) {
-        // If model not found, try alternative models
-        if (modelError.message && modelError.message.includes('not found')) {
-          console.log('gemini-3-flash-preview not available, trying alternative models...');
-          
-          const alternativeModels = ['gemini-1.5-pro', 'gemini-1.5-flash'];
-          let success = false;
-          
-          for (const altModelName of alternativeModels) {
-            try {
-              console.log(`Trying ${altModelName}...`);
-              const altModel = genAI.getGenerativeModel({ model: altModelName });
-              result = await altModel.generateContent(fullPrompt);
-              usedModel = altModelName;
-              console.log(`✅ Successfully used ${altModelName}`);
-              success = true;
-              break;
-            } catch (err) {
-              console.log(`❌ ${altModelName} failed: ${err.message}`);
-              continue;
-            }
-          }
-          
-          if (!success) {
-            throw new Error(`No available Gemini models found. Tried: gemini-3-flash-preview, ${alternativeModels.join(', ')}. Please check your API key and available models in Google AI Studio.`);
-          }
-        } else {
-          throw modelError;
-        }
-      }
+      const { result, usedModel } = await generateWithGeminiFallback(fullPrompt);
       
       const response = await result.response;
       output = response.text();
-      console.log(`Model used: ${usedModel}`);
+      console.log(`✅ Model used: ${usedModel}`);
 
       const duration = Date.now() - startTime;
       console.log(`Request completed successfully in ${duration}ms`);
@@ -500,41 +545,53 @@ app.post('/api/generate', async (req, res) => {
 
   } catch (error) {
     const duration = Date.now() - startTime;
-    console.error(`Error processing request after ${duration}ms:`, error);
+    
+    // Log detailed error server-side for debugging
+    console.error(`❌ Error processing request after ${duration}ms:`, {
+      error: error.message,
+      name: error.name,
+      stack: error.stack,
+      mode: req.body?.mode,
+      inputLength: req.body?.inputText?.length,
+      timestamp: new Date().toISOString()
+    });
+
+    // Handle custom AI service errors
+    const AIErrors = require('./utils/AIErrors');
+    
+    // Check if it's a custom error class
+    if (error instanceof AIErrors.AIServiceError) {
+      return res.status(error.statusCode).json(error.toJSON());
+    }
+
+    // Handle validation errors (400)
+    if (error.message && (
+      error.message.includes('required') || 
+      error.message.includes('invalid') ||
+      error.message.includes('must be')
+    )) {
+      return res.status(400).json({
+        error: 'Bad Request',
+        message: error.message
+      });
+    }
 
     // Handle Google Gemini API errors (only if not using mock mode)
     if (!USE_MOCK_AI) {
-      // Check for model not found errors
-      if (error.message && error.message.includes('not found')) {
-        console.error('Google Gemini Model Error:', {
-          message: error.message,
-          suggestion: 'The specified model is not available. Please check available models in Google AI Studio.'
-        });
-
-        return res.status(500).json({
-          error: 'Model Not Found',
-          message: 'The requested Gemini model is not available. Please check your API key permissions and available models.',
-          details: error.message
-        });
-      }
+      // Classify and handle Gemini-specific errors
+      const classifiedError = AIErrors.classifyError(error, 'Gemini', { 
+        triedModels: GEMINI_MODELS 
+      });
       
-      // Check for other common Gemini API error patterns
-      if (error.message && (error.message.includes('API_KEY') || error.message.includes('quota') || error.message.includes('permission'))) {
-        console.error('Google Gemini API Error:', {
-          message: error.message
-        });
-
-        return res.status(500).json({
-          error: 'Google Gemini API Error',
-          message: error.message
-        });
+      if (classifiedError instanceof AIErrors.AIServiceError) {
+        return res.status(classifiedError.statusCode).json(classifiedError.toJSON());
       }
     }
 
-    // Handle other errors
+    // Default to 500 for unexpected errors
     res.status(500).json({
       error: 'Internal Server Error',
-      message: error.message || 'An unexpected error occurred'
+      message: 'An unexpected error occurred. Please try again.'
     });
   }
 });
@@ -564,10 +621,26 @@ app.get('/', (req, res) => {
 
 // ========== ERROR HANDLING ==========
 app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
+  // Log detailed error server-side
+  console.error('❌ Unhandled error:', {
+    error: err.message,
+    name: err.name,
+    stack: err.stack,
+    path: req.path,
+    method: req.method,
+    timestamp: new Date().toISOString()
+  });
+
+  // Handle custom AI service errors
+  const AIErrors = require('./utils/AIErrors');
+  if (err instanceof AIErrors.AIServiceError) {
+    return res.status(err.statusCode).json(err.toJSON());
+  }
+
+  // Default error response
   res.status(500).json({
     error: 'Internal Server Error',
-    message: 'An unexpected error occurred'
+    message: 'An unexpected error occurred. Please try again.'
   });
 });
 

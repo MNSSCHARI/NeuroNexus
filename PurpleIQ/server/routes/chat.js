@@ -41,18 +41,65 @@ router.post('/:projectId', async (req, res) => {
       project.apiKey
     );
 
-    // Search for relevant chunks
-    console.log(`Searching for relevant chunks in project ${projectId}`);
+    // Search for relevant chunks with minimum similarity threshold
+    const MIN_SIMILARITY = 0.4;
+    console.log(`🔍 Searching for relevant chunks in project ${projectId} (min similarity: ${MIN_SIMILARITY})`);
+    
     const similarChunks = await vectorStore.searchSimilar(
       projectId,
       questionEmbedding,
-      5 // Top 5 most relevant chunks
+      5, // Top 5 most relevant chunks
+      MIN_SIMILARITY // Minimum similarity threshold
     );
 
+    // Get all vectors for logging
+    const allVectors = await vectorStore.getProjectVectors(projectId);
+    const totalChunks = allVectors.length;
+
+    // Log search quality metrics
+    console.log(`📊 Search Results:`);
+    console.log(`   Total chunks in project: ${totalChunks}`);
+    console.log(`   Chunks found above threshold (${MIN_SIMILARITY}): ${similarChunks.length}`);
+    
+    if (similarChunks.length > 0) {
+      console.log(`   Top matches:`);
+      similarChunks.forEach((chunk, idx) => {
+        console.log(`     ${idx + 1}. Score: ${chunk.similarity.toFixed(4)} | Doc: ${chunk.documentName} | Chunk: ${chunk.chunkIndex}`);
+      });
+    } else {
+      // Get top result even if below threshold for debugging
+      const allResults = await vectorStore.searchSimilarAll(projectId, questionEmbedding, 1);
+      if (allResults.length > 0) {
+        console.log(`   ⚠️  Best match (below threshold): ${allResults[0].similarity.toFixed(4)}`);
+        console.log(`   💡 This suggests the question may not be well-covered in the documents.`);
+      }
+    }
+
+    // If no good matches found, return helpful message
     if (similarChunks.length === 0) {
+      const allResults = await vectorStore.searchSimilarAll(projectId, questionEmbedding, 1);
+      const bestScore = allResults.length > 0 ? allResults[0].similarity : 0;
+      
+      let message = 'I could not find relevant information in the project documents to answer this question.';
+      
+      if (bestScore > 0 && bestScore < MIN_SIMILARITY) {
+        message += ` The closest match had a similarity score of ${bestScore.toFixed(2)}, which is below the quality threshold.`;
+        message += ' Please try rephrasing your question or ensure relevant documents are uploaded.';
+      } else if (totalChunks === 0) {
+        message = 'No documents have been uploaded to this project yet. Please upload relevant documents first.';
+      } else {
+        message += ' Please try rephrasing your question or upload more relevant documents.';
+      }
+
       return res.json({
-        answer: 'I could not find relevant information in the project documents to answer this question.',
-        sources: []
+        answer: message,
+        sources: [],
+        searchQuality: {
+          totalChunks,
+          matchesFound: 0,
+          bestScore: bestScore > 0 ? bestScore.toFixed(4) : null,
+          threshold: MIN_SIMILARITY
+        }
       });
     }
 
@@ -61,13 +108,21 @@ router.post('/:projectId', async (req, res) => {
       .map((chunk, index) => `[Document ${index + 1}: ${chunk.documentName}]\n${chunk.text}`)
       .join('\n\n---\n\n');
 
-    // Generate answer using project's AI model
-    console.log(`Generating answer using ${project.aiModel} for project ${projectId}`);
+    // Generate answer using project's AI model with automatic fallback
+    console.log(`\n📝 Generating answer using ${project.aiModel.toUpperCase()} for project ${projectId}`);
+    console.log(`📄 Context length: ${context.length} characters`);
+    console.log(`❓ Question: ${question.trim().substring(0, 100)}${question.trim().length > 100 ? '...' : ''}`);
+    
     const answer = await aiService.generateAnswer(
       project.aiModel,
       project.apiKey,
       context,
-      question.trim()
+      question.trim(),
+      {
+        enableFallback: true, // Enable automatic fallback between providers
+        // Note: Fallback will only work if project has both API keys configured
+        // For now, projects have one key per model, so fallback requires future enhancement
+      }
     );
 
     // Prepare sources
@@ -81,13 +136,49 @@ router.post('/:projectId', async (req, res) => {
       answer,
       sources,
       projectId,
-      question: question.trim()
+      question: question.trim(),
+      searchQuality: {
+        totalChunks,
+        matchesFound: similarChunks.length,
+        minScore: similarChunks.length > 0 ? Math.min(...similarChunks.map(c => c.similarity)).toFixed(4) : null,
+        maxScore: similarChunks.length > 0 ? Math.max(...similarChunks.map(c => c.similarity)).toFixed(4) : null,
+        threshold: MIN_SIMILARITY
+      }
     });
   } catch (error) {
-    console.error('Error in chat:', error);
+    // Log detailed error server-side for debugging
+    console.error('❌ Error in chat endpoint:', {
+      error: error.message,
+      name: error.name,
+      stack: error.stack,
+      projectId: req.params.projectId,
+      timestamp: new Date().toISOString()
+    });
+
+    // Handle custom AI service errors
+    const AIErrors = require('../utils/AIErrors');
+    
+    // Check if it's a custom error class
+    if (error instanceof AIErrors.AIServiceError) {
+      return res.status(error.statusCode).json(error.toJSON());
+    }
+
+    // Handle validation errors (400)
+    if (error.message && (
+      error.message.includes('required') || 
+      error.message.includes('invalid') ||
+      error.message.includes('must be')
+    )) {
+      return res.status(400).json({
+        error: 'Bad Request',
+        message: error.message
+      });
+    }
+
+    // Default to 500 for unexpected errors
     res.status(500).json({ 
-      error: 'Failed to generate answer', 
-      message: error.message 
+      error: 'Internal Server Error',
+      message: 'An unexpected error occurred while generating the answer. Please try again.'
     });
   }
 });

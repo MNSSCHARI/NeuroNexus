@@ -74,8 +74,51 @@ class VectorStore {
 
   /**
    * Search for similar vectors in project store
+   * @param {string} projectId - Project ID
+   * @param {Array} queryVector - Query embedding vector
+   * @param {number} topK - Number of top results to return (default: 5)
+   * @param {number} minSimilarity - Minimum similarity threshold (default: 0.4)
+   * @returns {Array} Array of similar vectors with similarity scores
    */
-  async searchSimilar(projectId, queryVector, topK = 5) {
+  async searchSimilar(projectId, queryVector, topK = 5, minSimilarity = 0.4) {
+    const storePath = this.getProjectStorePath(projectId);
+
+    if (!fs.existsSync(storePath)) {
+      return [];
+    }
+
+    const data = await fs.readJson(storePath);
+    const vectors = data.vectors || [];
+
+    if (vectors.length === 0) {
+      return [];
+    }
+
+    // Calculate similarity scores
+    const results = vectors.map((item, index) => {
+      const similarity = this.cosineSimilarity(queryVector, item.embedding);
+      return {
+        ...item,
+        similarity,
+        index
+      };
+    });
+
+    // Sort by similarity (descending)
+    results.sort((a, b) => b.similarity - a.similarity);
+
+    // Filter by minimum similarity threshold
+    const filteredResults = results.filter(item => item.similarity >= minSimilarity);
+
+    // Return top K results (or all if less than K match threshold)
+    return filteredResults.slice(0, topK);
+  }
+
+  /**
+   * Search for similar vectors without threshold (for testing/debugging)
+   * Returns all results sorted by similarity
+   */
+  async searchSimilarAll(projectId, queryVector, topK = 10) {
     const storePath = this.getProjectStorePath(projectId);
 
     if (!fs.existsSync(storePath)) {
