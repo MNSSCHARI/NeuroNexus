@@ -19,9 +19,15 @@
   position: fixed;
   top: 0;
   left: 0;
+  right: 0;
   padding: 1.5rem 2rem;
   z-index: 100;
   color: white;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(102, 126, 234, 0.1);
+  backdrop-filter: blur(10px);
 }
 
 .main-app-title {
@@ -29,6 +35,22 @@
   font-weight: 700;
   margin: 0;
   text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.admin-link {
+  padding: 0.5rem 1.5rem;
+  background: white;
+  color: #667eea;
+  text-decoration: none;
+  border-radius: 25px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  transition: all 0.3s ease;
+}
+
+.admin-link:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
 /* ========== MAIN CONTENT ========== */

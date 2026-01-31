@@ -1,11 +1,14 @@
 import { useState, useEffect } from 'react'
+import { Routes, Route, Navigate } from 'react-router-dom'
 import SplashScreen from './SplashScreen'
 import MainApp from './MainApp'
+import AdminPortal from './pages/AdminPortal'
+import ProjectChat from './pages/ProjectChat'
 import './App.css'
 
 /**
  * PurpleIQ - AI QA Assistant
- * Main App component that handles page routing between Splash and Main App
+ * Main App component with routing
  */
 function App() {
   // State to track if splash screen should be shown
@@ -27,12 +30,19 @@ function App() {
     return () => clearTimeout(timer)
   }, [])
 
-  // Render splash screen or main app based on state
+  // Show splash screen first
+  if (showSplash) {
+    return <SplashScreen onContinue={handleContinue} />
+  }
+
+  // Main routing after splash
   return (
-    <>
-      {showSplash && <SplashScreen onContinue={handleContinue} />}
-      {!showSplash && <MainApp />}
-    </>
+    <Routes>
+      <Route path="/" element={<MainApp />} />
+      <Route path="/admin" element={<AdminPortal />} />
+      <Route path="/project/:projectId" element={<ProjectChat />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   )
 }
 

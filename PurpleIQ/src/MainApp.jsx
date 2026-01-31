@@ -91,6 +91,7 @@ function MainApp() {
       {/* Fixed Header - Top Left */}
       <header className="main-app-header">
         <h1 className="main-app-title">PurpleIQ</h1>
+        <a href="/admin" className="admin-link">Admin Portal</a>
       </header>
 
       {/* Main Content - Two Column Layout */}

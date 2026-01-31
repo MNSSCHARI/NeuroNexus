@@ -31,6 +31,13 @@ app.use((req, res, next) => {
   next();
 });
 
+// ========== NEW ROUTES - PROJECT MANAGEMENT ==========
+const projectsRouter = require('./routes/projects');
+const chatRouter = require('./routes/chat');
+
+app.use('/api/projects', projectsRouter);
+app.use('/api/chat', chatRouter);
+
 // ========== SYSTEM PROMPT ==========
 const SYSTEM_PROMPT = `You are PurpleIQ, an AI-powered QA assistant designed to help manual and automation testers. 
 Your expertise includes:
@@ -576,7 +583,11 @@ app.listen(PORT, () => {
   }
   console.log('='.repeat(50));
   console.log(`Available endpoints:`);
-  console.log(`  POST http://localhost:${PORT}/api/generate`);
+  console.log(`  POST http://localhost:${PORT}/api/generate (legacy)`);
+  console.log(`  GET  http://localhost:${PORT}/api/projects`);
+  console.log(`  POST http://localhost:${PORT}/api/projects`);
+  console.log(`  POST http://localhost:${PORT}/api/projects/:id/documents`);
+  console.log(`  POST http://localhost:${PORT}/api/chat/:projectId`);
   console.log(`  GET  http://localhost:${PORT}/health`);
   console.log(`  GET  http://localhost:${PORT}/`);
   console.log('='.repeat(50));
