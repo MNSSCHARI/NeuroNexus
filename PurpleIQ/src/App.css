@@ -1,0 +1,258 @@
+/* ========== ROOT CONTAINER ========== */
+.app-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2rem;
+  min-height: 100vh;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+/* ========== HEADER ========== */
+.app-header {
+  text-align: center;
+  margin-bottom: 3rem;
+  color: white;
+}
+
+.app-title {
+  font-size: 3rem;
+  font-weight: 700;
+  margin: 0 0 1rem 0;
+  text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.app-description {
+  font-size: 1.2rem;
+  margin: 0;
+  opacity: 0.95;
+  font-weight: 300;
+}
+
+/* ========== MAIN CONTENT ========== */
+.app-main {
+  background: white;
+  border-radius: 12px;
+  padding: 2.5rem;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+}
+
+/* ========== FORM ========== */
+.generator-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.form-label {
+  font-weight: 600;
+  color: #333;
+  font-size: 1rem;
+}
+
+/* ========== MODE SELECT DROPDOWN ========== */
+.mode-select {
+  padding: 0.75rem 1rem;
+  border: 2px solid #e0e0e0;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-family: inherit;
+  background: white;
+  color: #333;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.mode-select:hover:not(:disabled) {
+  border-color: #667eea;
+}
+
+.mode-select:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.mode-select:disabled {
+  background: #f5f5f5;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* ========== INPUT TEXTAREA ========== */
+.input-textarea {
+  width: 100%;
+  padding: 1rem;
+  border: 2px solid #e0e0e0;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 200px;
+  transition: all 0.3s ease;
+  box-sizing: border-box;
+  line-height: 1.6;
+}
+
+.input-textarea:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.input-textarea:disabled {
+  background: #f5f5f5;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.input-textarea::placeholder {
+  color: #999;
+}
+
+/* ========== GENERATE BUTTON ========== */
+.generate-button {
+  padding: 1rem 2rem;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 1.1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 50px;
+}
+
+.generate-button:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+}
+
+.generate-button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.generate-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ========== LOADING SPINNER ========== */
+.spinner {
+  width: 20px;
+  height: 20px;
+  border: 3px solid rgba(255, 255, 255, 0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ========== ERROR MESSAGE ========== */
+.error-message {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  background: #fee;
+  border: 2px solid #fcc;
+  border-radius: 8px;
+  color: #c33;
+  font-size: 0.95rem;
+}
+
+.error-message strong {
+  font-weight: 600;
+}
+
+/* ========== OUTPUT SECTION ========== */
+.output-section {
+  margin-top: 2.5rem;
+  padding-top: 2rem;
+  border-top: 2px solid #e0e0e0;
+}
+
+.output-title {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #333;
+  margin: 0 0 1rem 0;
+}
+
+.output-content {
+  background: #f8f9fa;
+  border: 2px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 1.5rem;
+  max-height: 600px;
+  overflow-y: auto;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.output-line {
+  margin: 0.5rem 0;
+  color: #333;
+  font-size: 1rem;
+}
+
+.output-content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.output-content::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+
+.output-content::-webkit-scrollbar-thumb {
+  background: #667eea;
+  border-radius: 4px;
+}
+
+.output-content::-webkit-scrollbar-thumb:hover {
+  background: #764ba2;
+}
+
+/* ========== RESPONSIVE DESIGN ========== */
+@media (max-width: 768px) {
+  .app-container {
+    padding: 1rem;
+  }
+
+  .app-title {
+    font-size: 2rem;
+  }
+
+  .app-description {
+    font-size: 1rem;
+  }
+
+  .app-main {
+    padding: 1.5rem;
+  }
+
+  .input-textarea {
+    min-height: 150px;
+  }
+
+  .generate-button {
+    padding: 0.875rem 1.5rem;
+    font-size: 1rem;
+  }
+}
