@@ -578,7 +578,28 @@ app.post('/api/generate', async (req, res) => {
 
     // Handle Google Gemini API errors (only if not using mock mode)
     if (!USE_MOCK_AI) {
-      // Classify and handle Gemini-specific errors
+      // Check for quota/rate limit errors specifically
+      const errorMessage = error.message || String(error);
+      const isQuotaError = errorMessage.includes('429') || 
+                          errorMessage.includes('quota') || 
+                          errorMessage.includes('rate limit') ||
+                          errorMessage.includes('Too Many Requests');
+      
+      if (isQuotaError) {
+        // Extract retry delay from error message if available
+        const retryMatch = errorMessage.match(/retry in ([\d.]+)s/i);
+        const retryAfter = retryMatch ? Math.ceil(parseFloat(retryMatch[1])) : null;
+        
+        return res.status(429).json({
+          error: 'Rate Limit Exceeded',
+          message: `Gemini API quota exceeded. ${retryAfter ? `Please retry in ${retryAfter} seconds.` : 'Please try again later.'}`,
+          suggestion: 'You can enable MOCK AI mode by setting USE_MOCK_AI=true in your .env file to continue testing without API calls.',
+          retryAfter: retryAfter,
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+      // Classify and handle other Gemini-specific errors
       const classifiedError = AIErrors.classifyError(error, 'Gemini', { 
         triedModels: GEMINI_MODELS 
       });
@@ -652,6 +673,7 @@ app.listen(PORT, () => {
   console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🤖 AI Mode: ${USE_MOCK_AI ? '🔧 MOCK AI (No API calls)' : '✨ REAL AI (Google Gemini)'}`);
   if (!USE_MOCK_AI) {
+    console.log(`💡 Tip: If you hit quota limits, set USE_MOCK_AI=true in .env to use mock responses`);
     console.log(`🔑 Gemini API Key: ${process.env.GEMINI_API_KEY ? '✅ Configured' : '❌ Not configured'}`);
   }
   console.log('='.repeat(50));
