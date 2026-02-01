@@ -1,0 +1,21 @@
+# Sample Test Document
+
+This is a sample document for testing purposes.
+
+## Section 1: Introduction
+
+This section contains introductory information about the project. It has multiple sentences to test chunking functionality.
+
+## Section 2: Requirements
+
+The requirements section lists all project requirements:
+- Requirement 1: User authentication
+- Requirement 2: Data validation
+- Requirement 3: Error handling
+
+## Section 3: Testing
+
+Testing is an important part of the development process. It ensures quality and reliability.
+
+Each test case should be well-documented and cover both positive and negative scenarios.
+

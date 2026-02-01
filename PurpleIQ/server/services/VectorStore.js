@@ -1,5 +1,6 @@
 const fs = require('fs-extra');
 const path = require('path');
+const { createServiceLogger } = require('../utils/logger');
 
 /**
  * Simple file-based vector store
@@ -10,6 +11,8 @@ class VectorStore {
     // Use absolute path to ensure data directory is created correctly
     this.storagePath = path.join(process.cwd(), 'server', 'data', 'vectors');
     this.ensureStorageDirectory();
+    // Initialize logger
+    this.logger = createServiceLogger('VectorStore');
   }
 
   ensureStorageDirectory() {
@@ -80,10 +83,16 @@ class VectorStore {
    * @param {number} minSimilarity - Minimum similarity threshold (default: 0.4)
    * @returns {Array} Array of similar vectors with similarity scores
    */
-  async searchSimilar(projectId, queryVector, topK = 5, minSimilarity = 0.4) {
+  async searchSimilar(projectId, queryVector, topK = 5, minSimilarity = 0.4, requestId = null) {
+    const startTime = Date.now();
     const storePath = this.getProjectStorePath(projectId);
 
     if (!fs.existsSync(storePath)) {
+      this.logger.debug('Vector store file not found', {
+        function: 'searchSimilar',
+        projectId,
+        requestId
+      });
       return [];
     }
 
@@ -91,6 +100,11 @@ class VectorStore {
     const vectors = data.vectors || [];
 
     if (vectors.length === 0) {
+      this.logger.debug('No vectors in store', {
+        function: 'searchSimilar',
+        projectId,
+        requestId
+      });
       return [];
     }
 
@@ -109,16 +123,36 @@ class VectorStore {
 
     // Filter by minimum similarity threshold
     const filteredResults = results.filter(item => item.similarity >= minSimilarity);
+    const finalResults = filteredResults.slice(0, topK);
+    const duration = Date.now() - startTime;
+    const topScore = finalResults.length > 0 ? finalResults[0].similarity : null;
 
-    // Return top K results (or all if less than K match threshold)
-    return filteredResults.slice(0, topK);
+    // Log vector search
+    this.logger.vectorSearch(
+      `Query for project ${projectId}`,
+      finalResults.length,
+      topScore,
+      duration,
+      {
+        function: 'searchSimilar',
+        projectId,
+        topK,
+        minSimilarity,
+        totalVectors: vectors.length,
+        filteredCount: filteredResults.length,
+        requestId
+      }
+    );
+
+    return finalResults;
   }
 
   /**
    * Search for similar vectors without threshold (for testing/debugging)
    * Returns all results sorted by similarity
    */
-  async searchSimilarAll(projectId, queryVector, topK = 10) {
+  async searchSimilarAll(projectId, queryVector, topK = 10, requestId = null) {
+    const startTime = Date.now();
     const storePath = this.getProjectStorePath(projectId);
 
     if (!fs.existsSync(storePath)) {
@@ -140,7 +174,26 @@ class VectorStore {
 
     // Sort by similarity (descending) and return top K
     results.sort((a, b) => b.similarity - a.similarity);
-    return results.slice(0, topK);
+    const finalResults = results.slice(0, topK);
+    const duration = Date.now() - startTime;
+    const topScore = finalResults.length > 0 ? finalResults[0].similarity : null;
+
+    // Log vector search
+    this.logger.vectorSearch(
+      `Query for project ${projectId} (all results)`,
+      finalResults.length,
+      topScore,
+      duration,
+      {
+        function: 'searchSimilarAll',
+        projectId,
+        topK,
+        totalVectors: vectors.length,
+        requestId
+      }
+    );
+
+    return finalResults;
   }
 
   /**

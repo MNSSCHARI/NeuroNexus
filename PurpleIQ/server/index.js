@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { v4: uuidv4 } = require('uuid');
+const { createRequestLogger, sanitizeMetadata } = require('./utils/logger');
 require('dotenv').config();
 
 // Initialize Express app
@@ -105,9 +107,43 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Request ID middleware
+app.use((req, res, next) => {
+  req.requestId = uuidv4();
+  req.logger = createRequestLogger(req.requestId, 'express');
+  next();
+});
+
 // Request logging middleware
 app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  const startTime = Date.now();
+  
+  // Log request
+  req.logger.info(`Incoming request: ${req.method} ${req.path}`, {
+    function: 'requestMiddleware',
+    method: req.method,
+    path: req.path,
+    query: req.query,
+    bodySize: req.body ? JSON.stringify(req.body).length : 0,
+    ip: req.ip,
+    userAgent: req.get('user-agent')
+  });
+
+  // Log response when finished
+  res.on('finish', () => {
+    const duration = Date.now() - startTime;
+    req.logger.apiCall(
+      req.method,
+      req.path,
+      res.statusCode,
+      duration,
+      {
+        function: 'requestMiddleware',
+        bodySize: req.body ? JSON.stringify(req.body).length : 0
+      }
+    );
+  });
+
   next();
 });
 
@@ -116,11 +152,13 @@ const projectsRouter = require('./routes/projects');
 const chatRouter = require('./routes/chat');
 const exportRouter = require('./routes/export');
 const settingsRouter = require('./routes/settings');
+const logsRouter = require('./routes/logs');
 
 app.use('/api/projects', projectsRouter);
 app.use('/api/chat', chatRouter);
 app.use('/api/export', exportRouter);
 app.use('/api/settings', settingsRouter);
+app.use('/api/logs', logsRouter);
 
 // ========== SYSTEM PROMPT ==========
 const SYSTEM_PROMPT = `You are PurpleIQ, an AI-powered QA assistant designed to help manual and automation testers. 

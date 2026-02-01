@@ -7,6 +7,8 @@ const vectorStore = require('../services/VectorStore');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs-extra');
+const pdf = require('pdf-parse');
+const mammoth = require('mammoth');
 
 // Configure multer for file uploads
 const uploadDir = path.join(__dirname, '../uploads');
@@ -122,47 +124,87 @@ router.post('/:projectId/documents', upload.single('document'), async (req, res)
     const filePath = req.file.path;
     const fileName = req.file.originalname;
 
-    // Parse document into chunks
+    // Parse document into text first
     console.log(`Parsing document: ${fileName}`);
-    let chunks;
+    let rawText;
     try {
-      chunks = await documentParser.parseFile(filePath);
+      const ext = path.extname(fileName).toLowerCase();
+      if (ext === '.pdf') {
+        const dataBuffer = await fs.readFile(filePath);
+        const data = await pdf(dataBuffer);
+        rawText = data.text;
+      } else if (ext === '.docx') {
+        const result = await mammoth.extractRawText({ path: filePath });
+        rawText = result.value;
+      } else if (ext === '.txt') {
+        rawText = await fs.readFile(filePath, 'utf-8');
+      } else {
+        throw new Error(`Unsupported file type: ${ext}`);
+      }
     } catch (parseError) {
       console.error('Document parsing error:', parseError);
       throw parseError;
     }
 
-    if (!chunks || chunks.length === 0) {
+    if (!rawText || rawText.trim().length === 0) {
       throw new Error('No text could be extracted from the document');
     }
 
+    // Use intelligent chunking with metadata
+    console.log(`Using intelligent chunking for better retrieval quality`);
+    const chunkMetadata = {
+      documentName: fileName,
+      projectId: projectId,
+      uploadedAt: new Date().toISOString()
+    };
+    
+    const chunksWithMetadata = documentParser.intelligentChunkWithMetadata(
+      rawText,
+      800,  // chunkSize
+      100,  // overlap
+      chunkMetadata
+    );
+
+    if (!chunksWithMetadata || chunksWithMetadata.length === 0) {
+      throw new Error('No text chunks could be created from the document');
+    }
+
+    // Extract just the text for embedding generation
+    const chunkTexts = chunksWithMetadata.map(c => c.text);
+
     // Generate embeddings for chunks
-    console.log(`Generating embeddings for ${chunks.length} chunks`);
+    console.log(`Generating embeddings for ${chunkTexts.length} chunks`);
     let embeddings;
     try {
-      embeddings = await embeddingService.generateEmbeddings(chunks, project.apiKey);
+      embeddings = await embeddingService.generateEmbeddings(chunkTexts, project.apiKey);
     } catch (embedError) {
       console.error('Embedding generation error:', embedError);
       throw new Error(`Failed to generate embeddings: ${embedError.message}`);
     }
 
     // Validate embeddings match chunks
-    if (!embeddings || embeddings.length !== chunks.length) {
-      console.error(`Embedding mismatch: ${chunks.length} chunks but ${embeddings?.length || 0} embeddings`);
-      throw new Error(`Embedding generation failed: expected ${chunks.length} embeddings, got ${embeddings?.length || 0}`);
+    if (!embeddings || embeddings.length !== chunksWithMetadata.length) {
+      console.error(`Embedding mismatch: ${chunksWithMetadata.length} chunks but ${embeddings?.length || 0} embeddings`);
+      throw new Error(`Embedding generation failed: expected ${chunksWithMetadata.length} embeddings, got ${embeddings?.length || 0}`);
     }
 
-    // Prepare vector store data
-    const vectorData = chunks.map((chunk, index) => {
+    // Prepare vector store data with full metadata
+    const vectorData = chunksWithMetadata.map((chunk, index) => {
       if (!embeddings[index]) {
         throw new Error(`Missing embedding for chunk ${index}`);
       }
       return {
-        text: chunk,
+        text: chunk.text,
         embedding: embeddings[index],
         documentName: fileName,
-        chunkIndex: index,
-        projectId
+        chunkIndex: chunk.chunkIndex,
+        projectId: projectId,
+        // Additional metadata from intelligent chunking
+        charStart: chunk.charStart,
+        charEnd: chunk.charEnd,
+        charLength: chunk.charLength,
+        section: chunk.section || null,
+        sectionIndex: chunk.sectionIndex || null
       };
     });
 
@@ -173,7 +215,7 @@ router.post('/:projectId/documents', upload.single('document'), async (req, res)
     await projectStorage.addDocumentToProject(projectId, {
       fileName,
       filePath: req.file.filename,
-      chunkCount: chunks.length,
+      chunkCount: chunksWithMetadata.length,
       uploadedAt: new Date().toISOString()
     });
 
@@ -188,7 +230,7 @@ router.post('/:projectId/documents', upload.single('document'), async (req, res)
       message: 'Document processed successfully',
       document: {
         fileName,
-        chunkCount: chunks.length
+        chunkCount: chunksWithMetadata.length
       },
       project: updatedProject ? updatedProject.toJSON() : null
     });

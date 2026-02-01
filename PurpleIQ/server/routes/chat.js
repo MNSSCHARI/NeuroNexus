@@ -38,21 +38,21 @@ router.post('/:projectId', async (req, res) => {
     } else {
 
       // Generate embedding for question
-      console.log(`Generating embedding for question in project ${projectId}`);
       const questionEmbedding = await embeddingService.generateEmbedding(
         question.trim(),
-        project.apiKey
+        project.apiKey,
+        req.requestId
       );
 
       // Search for relevant chunks with minimum similarity threshold
       const MIN_SIMILARITY = 0.4;
-      console.log(`🔍 Searching for relevant chunks in project ${projectId} (min similarity: ${MIN_SIMILARITY})`);
       
       similarChunks = await vectorStore.searchSimilar(
         projectId,
         questionEmbedding,
         5, // Top 5 most relevant chunks
-        MIN_SIMILARITY // Minimum similarity threshold
+        MIN_SIMILARITY, // Minimum similarity threshold
+        req.requestId
       );
 
       // Log search quality metrics
@@ -67,10 +67,14 @@ router.post('/:projectId', async (req, res) => {
         });
       } else {
         // Get top result even if below threshold for debugging
-        const allResults = await vectorStore.searchSimilarAll(projectId, questionEmbedding, 1);
+        const allResults = await vectorStore.searchSimilarAll(projectId, questionEmbedding, 1, req.requestId);
         if (allResults.length > 0) {
-          console.log(`   ⚠️  Best match (below threshold): ${allResults[0].similarity.toFixed(4)}`);
-          console.log(`   💡 This suggests the question may not be well-covered in the documents.`);
+          req.logger.warn('Best match below threshold', {
+            function: 'chat',
+            projectId,
+            topScore: allResults[0].similarity.toFixed(4),
+            threshold: MIN_SIMILARITY
+          });
         }
       }
 
@@ -81,12 +85,17 @@ router.post('/:projectId', async (req, res) => {
           .join('\n\n---\n\n');
       } else {
         // If no good matches but documents exist, use best match anyway
-        const allResults = await vectorStore.searchSimilarAll(projectId, questionEmbedding, 3);
+        const allResults = await vectorStore.searchSimilarAll(projectId, questionEmbedding, 3, req.requestId);
         if (allResults.length > 0) {
           context = allResults
             .map((chunk, index) => `[Document ${index + 1}: ${chunk.documentName}]\n${chunk.text}`)
             .join('\n\n---\n\n');
-          console.log(`⚠️  Using lower-quality matches (best score: ${allResults[0].similarity.toFixed(4)})`);
+          req.logger.warn('Using lower-quality matches', {
+            function: 'chat',
+            projectId,
+            bestScore: allResults[0].similarity.toFixed(4),
+            threshold: MIN_SIMILARITY
+          });
         } else {
           context = 'No relevant project documents found.';
         }

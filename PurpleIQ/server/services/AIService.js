@@ -18,6 +18,7 @@ const {
 } = require('../prompts/PromptTemplates');
 const fs = require('fs-extra');
 const path = require('path');
+const { createServiceLogger } = require('../utils/logger');
 
 /**
  * AI Service
@@ -38,6 +39,16 @@ class AIService {
       commonIssues: new Map(), // issue -> count
       scoresByTaskType: new Map() // taskType -> [scores]
     };
+    // Performance metrics
+    this.performanceMetrics = {
+      aiCalls: 0,
+      cacheHits: 0,
+      cacheMisses: 0,
+      totalTokens: 0,
+      averageLatency: 0
+    };
+    // Initialize logger
+    this.logger = createServiceLogger('AIService');
     this.loadDemoResponses();
     this.loadSettings();
   }

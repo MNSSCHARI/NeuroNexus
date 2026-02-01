@@ -2,6 +2,7 @@ const fs = require('fs-extra');
 const pdf = require('pdf-parse');
 const mammoth = require('mammoth');
 const path = require('path');
+const embeddingService = require('./EmbeddingService');
 
 /**
  * Document Parser Service
@@ -9,61 +10,40 @@ const path = require('path');
  */
 class DocumentParser {
   /**
-   * Split text into chunks with overlap
+   * Split text into chunks with overlap (legacy method - uses intelligent chunking)
+   * @deprecated Use intelligentChunkText instead for better quality
    */
   chunkText(text, chunkSize = 1000, overlap = 200) {
+    // Use intelligent chunking by default
+    return this.intelligentChunkText(text, chunkSize, overlap);
+  }
+
+  /**
+   * Intelligent chunking: Split text on natural boundaries
+   * Uses EmbeddingService's intelligent chunking for better quality
+   */
+  intelligentChunkText(text, chunkSize = 800, overlap = 100, metadata = {}) {
     if (!text || typeof text !== 'string') {
       return [];
     }
 
-    // Limit text length to prevent array size issues (max 10MB of text)
-    const MAX_TEXT_LENGTH = 10 * 1024 * 1024; // 10MB
-    if (text.length > MAX_TEXT_LENGTH) {
-      console.warn(`Text is very large (${text.length} chars), truncating to ${MAX_TEXT_LENGTH} chars`);
-      text = text.substring(0, MAX_TEXT_LENGTH);
+    // Use EmbeddingService's intelligent chunking
+    const chunks = embeddingService.intelligentChunk(text, chunkSize, overlap, metadata);
+    
+    // Return as simple array of strings for backward compatibility
+    // But also store full chunk objects if needed
+    return chunks.map(c => c.text);
+  }
+
+  /**
+   * Get intelligent chunks with full metadata
+   */
+  intelligentChunkWithMetadata(text, chunkSize = 800, overlap = 100, metadata = {}) {
+    if (!text || typeof text !== 'string') {
+      return [];
     }
 
-    const chunks = [];
-    let start = 0;
-    const textLength = text.length;
-    let iterations = 0;
-    const MAX_ITERATIONS = 100000; // Safety limit to prevent infinite loops
-
-    // Ensure overlap is less than chunkSize to prevent infinite loops
-    const safeOverlap = Math.min(overlap, Math.floor(chunkSize * 0.5));
-
-    while (start < textLength && iterations < MAX_ITERATIONS) {
-      iterations++;
-      const end = Math.min(start + chunkSize, textLength);
-      const chunk = text.substring(start, end).trim();
-      
-      if (chunk.length > 0) {
-        chunks.push(chunk);
-      }
-
-      // Calculate next start position
-      const nextStart = end - safeOverlap;
-      
-      // Safety check: ensure we're making progress
-      if (nextStart <= start) {
-        // If we're not making progress, advance by at least chunkSize/2
-        start = start + Math.floor(chunkSize / 2);
-      } else {
-        start = nextStart;
-      }
-
-      // Final safety check
-      if (start >= textLength) {
-        break;
-      }
-    }
-
-    if (iterations >= MAX_ITERATIONS) {
-      console.error('Chunking reached max iterations, may have incomplete chunks');
-    }
-
-    console.log(`Created ${chunks.length} chunks from ${textLength} characters`);
-    return chunks;
+    return embeddingService.intelligentChunk(text, chunkSize, overlap, metadata);
   }
 
   /**
