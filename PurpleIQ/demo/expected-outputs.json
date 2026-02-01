@@ -1,0 +1,415 @@
+{
+  "login-module": {
+    "prdFile": "login-module.txt",
+    "expectedTestCases": {
+      "minCount": 12,
+      "maxCount": 20,
+      "coverage": {
+        "positive": ">= 30%",
+        "negative": ">= 30%",
+        "edgeCase": ">= 30%"
+      },
+      "keyTestCases": [
+        {
+          "testCaseId": "TC_LOGIN_001",
+          "description": "Verify successful login with valid credentials",
+          "type": "Positive",
+          "priority": "High"
+        },
+        {
+          "testCaseId": "TC_LOGIN_002",
+          "description": "Verify login fails with invalid password",
+          "type": "Negative",
+          "priority": "High"
+        },
+        {
+          "testCaseId": "TC_LOGIN_008",
+          "description": "Verify login fails after 5 consecutive failed attempts",
+          "type": "Negative",
+          "priority": "High"
+        },
+        {
+          "testCaseId": "TC_LOGIN_009",
+          "description": "Verify login with OAuth provider (Google)",
+          "type": "Positive",
+          "priority": "Medium"
+        }
+      ]
+    },
+    "expectedTestPlan": {
+      "sections": [
+        "Test Objectives",
+        "Scope",
+        "Test Approach/Strategy",
+        "Test Types",
+        "Test Environment Requirements",
+        "Test Data Requirements",
+        "Risk Assessment",
+        "Timeline/Estimation",
+        "Resource Requirements",
+        "Entry/Exit Criteria"
+      ],
+      "keyPoints": [
+        "Authentication testing",
+        "Security testing (XSS, SQL injection)",
+        "Session management",
+        "OAuth integration",
+        "Rate limiting",
+        "Account lockout"
+      ]
+    },
+    "expectedBugReports": {
+      "sampleScenarios": [
+        "Login button not responding",
+        "Session timeout issues",
+        "OAuth redirect failures",
+        "Account lockout not working"
+      ]
+    }
+  },
+  "payment-gateway": {
+    "prdFile": "payment-gateway.txt",
+    "expectedTestCases": {
+      "minCount": 15,
+      "maxCount": 25,
+      "coverage": {
+        "positive": ">= 30%",
+        "negative": ">= 30%",
+        "edgeCase": ">= 30%"
+      },
+      "keyTestCases": [
+        {
+          "testCaseId": "TC_PAYMENT_001",
+          "description": "Verify successful payment processing with valid credit card",
+          "type": "Positive",
+          "priority": "High"
+        },
+        {
+          "testCaseId": "TC_PAYMENT_002",
+          "description": "Verify payment fails with invalid credit card number",
+          "type": "Negative",
+          "priority": "High"
+        },
+        {
+          "testCaseId": "TC_PAYMENT_004",
+          "description": "Verify payment with insufficient funds",
+          "type": "Negative",
+          "priority": "High"
+        },
+        {
+          "testCaseId": "TC_PAYMENT_010",
+          "description": "Verify payment with network timeout scenario",
+          "type": "Edge Case",
+          "priority": "High"
+        }
+      ]
+    },
+    "expectedTestPlan": {
+      "sections": [
+        "Test Objectives",
+        "Scope",
+        "Test Approach/Strategy",
+        "Test Types",
+        "Test Environment Requirements",
+        "Test Data Requirements",
+        "Risk Assessment",
+        "Timeline/Estimation",
+        "Resource Requirements",
+        "Entry/Exit Criteria"
+      ],
+      "keyPoints": [
+        "Stripe API integration testing",
+        "PCI DSS compliance",
+        "Payment processing flows",
+        "Error handling",
+        "Transaction logging",
+        "Refund processing",
+        "3D Secure authentication"
+      ]
+    },
+    "expectedBugReports": {
+      "sampleScenarios": [
+        "Payment processing fails silently",
+        "Card validation errors not displaying",
+        "Transaction timeout handling",
+        "Refund processing failures"
+      ]
+    }
+  },
+  "user-registration": {
+    "prdFile": "user-registration.txt",
+    "expectedTestCases": {
+      "minCount": 12,
+      "maxCount": 20,
+      "coverage": {
+        "positive": ">= 20%",
+        "negative": ">= 40%",
+        "edgeCase": ">= 30%"
+      },
+      "keyTestCases": [
+        {
+          "testCaseId": "TC_REG_001",
+          "description": "Verify successful user registration with valid data",
+          "type": "Positive",
+          "priority": "High"
+        },
+        {
+          "testCaseId": "TC_REG_002",
+          "description": "Verify registration fails with duplicate email",
+          "type": "Negative",
+          "priority": "High"
+        },
+        {
+          "testCaseId": "TC_REG_003",
+          "description": "Verify registration fails with weak password",
+          "type": "Negative",
+          "priority": "High"
+        },
+        {
+          "testCaseId": "TC_REG_009",
+          "description": "Verify registration email verification flow",
+          "type": "Positive",
+          "priority": "High"
+        }
+      ]
+    },
+    "expectedTestPlan": {
+      "sections": [
+        "Test Objectives",
+        "Scope",
+        "Test Approach/Strategy",
+        "Test Types",
+        "Test Environment Requirements",
+        "Test Data Requirements",
+        "Risk Assessment",
+        "Timeline/Estimation",
+        "Resource Requirements",
+        "Entry/Exit Criteria"
+      ],
+      "keyPoints": [
+        "Form validation testing",
+        "Email verification flow",
+        "Password strength validation",
+        "Duplicate email handling",
+        "Data sanitization",
+        "Rate limiting",
+        "GDPR compliance"
+      ]
+    },
+    "expectedBugReports": {
+      "sampleScenarios": [
+        "Email verification link not working",
+        "Password validation not enforcing requirements",
+        "Duplicate email not detected",
+        "Registration form XSS vulnerabilities"
+      ]
+    }
+  },
+  "dashboard-analytics": {
+    "prdFile": "dashboard-analytics.txt",
+    "expectedTestCases": {
+      "minCount": 15,
+      "maxCount": 25,
+      "coverage": {
+        "positive": ">= 40%",
+        "negative": ">= 25%",
+        "edgeCase": ">= 30%"
+      },
+      "keyTestCases": [
+        {
+          "testCaseId": "TC_DASHBOARD_001",
+          "description": "Verify dashboard loads with all KPI cards displaying correct metrics",
+          "type": "Positive",
+          "priority": "High"
+        },
+        {
+          "testCaseId": "TC_DASHBOARD_002",
+          "description": "Verify date range selector updates dashboard data correctly",
+          "type": "Positive",
+          "priority": "High"
+        },
+        {
+          "testCaseId": "TC_DASHBOARD_003",
+          "description": "Verify charts render correctly with interactive features",
+          "type": "Positive",
+          "priority": "High"
+        },
+        {
+          "testCaseId": "TC_DASHBOARD_004",
+          "description": "Verify export functionality works for all formats",
+          "type": "Positive",
+          "priority": "Medium"
+        }
+      ]
+    },
+    "expectedTestPlan": {
+      "sections": [
+        "Test Objectives",
+        "Scope",
+        "Test Approach/Strategy",
+        "Test Types",
+        "Test Environment Requirements",
+        "Test Data Requirements",
+        "Risk Assessment",
+        "Timeline/Estimation",
+        "Resource Requirements",
+        "Entry/Exit Criteria"
+      ],
+      "keyPoints": [
+        "Data visualization testing",
+        "Performance testing (load time)",
+        "Export functionality",
+        "Real-time updates",
+        "Dashboard customization",
+        "Role-based access control",
+        "Mobile responsiveness"
+      ]
+    },
+    "expectedBugReports": {
+      "sampleScenarios": [
+        "Dashboard not loading within 2 seconds",
+        "Charts not rendering correctly",
+        "Export functionality failing",
+        "Real-time updates not working"
+      ]
+    }
+  },
+  "api-integration": {
+    "prdFile": "api-integration.txt",
+    "expectedTestCases": {
+      "minCount": 20,
+      "maxCount": 30,
+      "coverage": {
+        "positive": ">= 40%",
+        "negative": ">= 30%",
+        "edgeCase": ">= 25%"
+      },
+      "keyTestCases": [
+        {
+          "testCaseId": "TC_API_001",
+          "description": "Verify API authentication with valid API key",
+          "type": "Positive",
+          "priority": "High"
+        },
+        {
+          "testCaseId": "TC_API_002",
+          "description": "Verify API request fails with invalid API key",
+          "type": "Negative",
+          "priority": "High"
+        },
+        {
+          "testCaseId": "TC_API_003",
+          "description": "Verify rate limiting is enforced correctly",
+          "type": "Negative",
+          "priority": "High"
+        },
+        {
+          "testCaseId": "TC_API_004",
+          "description": "Verify webhook delivery works correctly",
+          "type": "Positive",
+          "priority": "High"
+        }
+      ]
+    },
+    "expectedTestPlan": {
+      "sections": [
+        "Test Objectives",
+        "Scope",
+        "Test Approach/Strategy",
+        "Test Types",
+        "Test Environment Requirements",
+        "Test Data Requirements",
+        "Risk Assessment",
+        "Timeline/Estimation",
+        "Resource Requirements",
+        "Entry/Exit Criteria"
+      ],
+      "keyPoints": [
+        "API authentication testing",
+        "Rate limiting testing",
+        "Webhook delivery testing",
+        "API versioning",
+        "Error handling",
+        "Performance testing",
+        "Security testing (OWASP Top 10)"
+      ]
+    },
+    "expectedBugReports": {
+      "sampleScenarios": [
+        "API authentication failing",
+        "Rate limiting not working",
+        "Webhook delivery failures",
+        "API response time exceeding limits"
+      ]
+    }
+  },
+  "validationCriteria": {
+    "testCases": {
+      "minTestCases": 10,
+      "maxTestCases": 30,
+      "requiredFields": [
+        "testCaseId",
+        "description",
+        "preconditions",
+        "steps",
+        "expectedResults",
+        "priority",
+        "type"
+      ],
+      "fieldRequirements": {
+        "testCaseId": "Format: TC_MODULE_XXX",
+        "description": "50-150 characters, specific and actionable",
+        "preconditions": "Array of 1-3 specific preconditions",
+        "steps": "Array of 3-8 detailed, numbered steps",
+        "expectedResults": "30-100 characters, specific and measurable",
+        "priority": "High, Medium, or Low",
+        "type": "Positive, Negative, or Edge Case"
+      },
+      "coverageDistribution": {
+        "positive": ">= 30%",
+        "negative": ">= 30%",
+        "edgeCase": ">= 30%"
+      }
+    },
+    "testPlans": {
+      "requiredSections": [
+        "Test Objectives",
+        "Scope",
+        "Test Approach/Strategy",
+        "Test Types",
+        "Test Environment Requirements",
+        "Test Data Requirements",
+        "Risk Assessment",
+        "Timeline/Estimation",
+        "Resource Requirements",
+        "Entry/Exit Criteria"
+      ],
+      "minLength": 500,
+      "qualityIndicators": [
+        "No placeholder text",
+        "Specific timelines and estimates",
+        "Actionable test approach",
+        "Clear scope definition"
+      ]
+    },
+    "bugReports": {
+      "requiredSections": [
+        "Title/Summary",
+        "Description",
+        "Steps to Reproduce",
+        "Expected Behavior",
+        "Actual Behavior",
+        "Environment",
+        "Priority/Severity"
+      ],
+      "minLength": 200,
+      "qualityIndicators": [
+        "Minimum 3 detailed steps",
+        "Clear expected vs actual behavior",
+        "Specific environment details",
+        "Actionable for developers"
+      ]
+    }
+  }
+}
+

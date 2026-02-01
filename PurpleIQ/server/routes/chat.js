@@ -107,12 +107,22 @@ router.post('/:projectId', async (req, res) => {
     console.log(`📄 Context length: ${context.length} characters`);
     console.log(`❓ Question: ${question.trim().substring(0, 100)}${question.trim().length > 100 ? '...' : ''}`);
     
+    // Progress callback for loading indicators (if supported by client)
+    const progressCallback = req.query.progress === 'true' ? (progress) => {
+      // Could send Server-Sent Events (SSE) here for real-time progress
+      // For now, we'll just log it
+      if (progress.stage && progress.progress !== undefined) {
+        console.log(`📊 Progress: ${progress.stage} - ${progress.progress}%`);
+      }
+    } : null;
+    
     const agenticResult = await aiService.processAgenticRequest(
       question.trim(),
       context,
       project.aiModel,
       project.apiKey,
-      projectId
+      projectId,
+      progressCallback
     );
 
     const answer = agenticResult.answer;
@@ -148,6 +158,9 @@ router.post('/:projectId', async (req, res) => {
       intent: intent,
       workflow: workflow,
       ...(metadata && { metadata: metadata }),
+      // Model and rate limit metadata
+      ...(agenticResult.modelInfo && { modelInfo: agenticResult.modelInfo }),
+      ...(agenticResult.rateLimitInfo && { rateLimitInfo: agenticResult.rateLimitInfo }),
       searchQuality: {
         totalChunks,
         matchesFound: similarChunks.length,
@@ -158,13 +171,14 @@ router.post('/:projectId', async (req, res) => {
     });
   } catch (error) {
     // Log detailed error server-side for debugging
-    console.error('❌ Error in chat endpoint:', {
+    const errorDetails = {
       error: error.message,
       name: error.name,
       stack: error.stack,
       projectId: req.params.projectId,
       timestamp: new Date().toISOString()
-    });
+    };
+    console.error('❌ Error in chat endpoint:', errorDetails);
 
     // Handle custom AI service errors
     const AIErrors = require('../utils/AIErrors');
@@ -186,10 +200,41 @@ router.post('/:projectId', async (req, res) => {
       });
     }
 
+    // Handle API key errors
+    if (error.message && (
+      error.message.includes('API key') ||
+      error.message.includes('GEMINI_API_KEY') ||
+      error.message.includes('OPENAI_API_KEY')
+    )) {
+      return res.status(401).json({
+        error: 'API Key Error',
+        message: error.message
+      });
+    }
+
+    // Handle rate limit errors
+    if (error.message && (
+      error.message.includes('429') ||
+      error.message.includes('rate limit') ||
+      error.message.includes('quota')
+    )) {
+      return res.status(429).json({
+        error: 'Rate Limit Exceeded',
+        message: error.message || 'API rate limit exceeded. Please try again in a moment.'
+      });
+    }
+
+    // For development, return more details
+    const isDevelopment = process.env.NODE_ENV !== 'production';
+    const errorMessage = isDevelopment 
+      ? `${error.message || 'An unexpected error occurred'} (${error.name || 'Error'})`
+      : 'An unexpected error occurred while generating the answer. Please try again.';
+
     // Default to 500 for unexpected errors
     res.status(500).json({ 
       error: 'Internal Server Error',
-      message: 'An unexpected error occurred while generating the answer. Please try again.'
+      message: errorMessage,
+      ...(isDevelopment && { details: error.stack?.split('\n').slice(0, 5) })
     });
   }
 });
@@ -240,6 +285,123 @@ router.get('/:projectId/history', async (req, res) => {
 });
 
 /**
+ * GET /api/debug
+ * Get debug information about recent AI requests
+ */
+router.get('/debug', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 5;
+    const debugLog = aiService.getDebugLog(limit);
+    
+    // Calculate context quality metrics
+    const contextQualityMetrics = debugLog.map(entry => {
+      if (!entry.contextLength) return null;
+      
+      const contextTokens = entry.promptTokens - entry.questionTokens;
+      const qualityScore = calculateContextQuality(entry);
+      
+      return {
+        timestamp: entry.timestamp,
+        contextLength: entry.contextLength,
+        contextTokens: contextTokens,
+        questionLength: entry.questionLength,
+        qualityScore: qualityScore,
+        promptTokens: entry.promptTokens,
+        responseTokens: entry.responseTokens
+      };
+    }).filter(m => m !== null);
+    
+    res.json({
+      debugLog: debugLog.map(entry => ({
+        timestamp: entry.timestamp,
+        type: entry.type,
+        model: entry.model,
+        provider: entry.provider,
+        prompt: entry.prompt?.substring(0, 500) + (entry.prompt?.length > 500 ? '...' : ''),
+        promptTokens: entry.promptTokens,
+        response: entry.response?.substring(0, 500) + (entry.response?.length > 500 ? '...' : ''),
+        responseTokens: entry.responseTokens,
+        duration: entry.duration,
+        contextLength: entry.contextLength,
+        questionLength: entry.questionLength,
+        actualTokens: entry.actualTokens
+      })),
+      contextQualityMetrics: contextQualityMetrics,
+      summary: {
+        totalEntries: aiService.debugLog.length,
+        averagePromptTokens: debugLog.length > 0 
+          ? Math.round(debugLog.reduce((sum, e) => sum + (e.promptTokens || 0), 0) / debugLog.length)
+          : 0,
+        averageResponseTokens: debugLog.length > 0
+          ? Math.round(debugLog.reduce((sum, e) => sum + (e.responseTokens || 0), 0) / debugLog.length)
+          : 0,
+        averageDuration: debugLog.length > 0
+          ? Math.round(debugLog.reduce((sum, e) => sum + (e.duration || 0), 0) / debugLog.length)
+          : 0
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error getting debug info:', error);
+    res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Failed to retrieve debug information'
+    });
+  }
+});
+
+/**
+ * Calculate context quality score
+ */
+function calculateContextQuality(entry) {
+  if (!entry.contextLength || !entry.questionLength) return 0;
+  
+  let score = 0;
+  
+  // Context length score (0-40 points)
+  // Optimal: 1000-3000 chars (20 points)
+  // Too short: < 500 chars (10 points)
+  // Too long: > 5000 chars (10 points, risk of truncation)
+  if (entry.contextLength >= 1000 && entry.contextLength <= 3000) {
+    score += 40;
+  } else if (entry.contextLength >= 500 && entry.contextLength < 1000) {
+    score += 30;
+  } else if (entry.contextLength > 3000 && entry.contextLength <= 5000) {
+    score += 30;
+  } else if (entry.contextLength < 500) {
+    score += 10;
+  } else {
+    score += 10; // Too long
+  }
+  
+  // Token efficiency (0-30 points)
+  // Optimal ratio: 2:1 to 5:1 (context:question)
+  const ratio = entry.contextLength / entry.questionLength;
+  if (ratio >= 2 && ratio <= 5) {
+    score += 30;
+  } else if (ratio >= 1 && ratio < 2) {
+    score += 20;
+  } else if (ratio > 5 && ratio <= 10) {
+    score += 20;
+  } else {
+    score += 10;
+  }
+  
+  // Response quality (0-30 points)
+  // Based on response length and tokens
+  if (entry.responseTokens >= 100 && entry.responseTokens <= 2000) {
+    score += 30;
+  } else if (entry.responseTokens >= 50 && entry.responseTokens < 100) {
+    score += 20;
+  } else if (entry.responseTokens > 2000) {
+    score += 20; // Very long response
+  } else {
+    score += 10; // Too short
+  }
+  
+  return Math.min(100, score);
+}
+
+/**
  * DELETE /api/chat/:projectId/history
  * Clear conversation history for a project
  */
@@ -265,6 +427,54 @@ router.delete('/:projectId/history', async (req, res) => {
     res.status(500).json({
       error: 'Internal Server Error',
       message: 'Failed to clear conversation history'
+    });
+  }
+});
+
+/**
+ * GET /api/debug/vector-search/:projectId
+ * Detailed vector search debugging
+ */
+router.get('/debug/vector-search/:projectId', async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const { query } = req.query;
+    
+    const embeddingService = require('../services/EmbeddingService');
+    
+    // Run detailed debug
+    const debugResult = await embeddingService.debugVectorSearch(
+      projectId, 
+      query || 'login functionality'
+    );
+    
+    res.json(debugResult);
+  } catch (error) {
+    console.error('❌ Error in vector search debug:', error);
+    res.status(500).json({
+      error: 'Internal Server Error',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/rate-limit-status
+ * Get current rate limit status and recommendations
+ */
+router.get('/rate-limit-status', async (req, res) => {
+  try {
+    const status = aiService.getRateLimitStatus();
+    res.json({
+      success: true,
+      ...status,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting rate limit status:', error);
+    res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Failed to retrieve rate limit status'
     });
   }
 });

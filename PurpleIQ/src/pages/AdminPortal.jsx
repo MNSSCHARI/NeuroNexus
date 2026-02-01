@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { AnimatedSpinner, ProjectSkeleton, SuccessAnimation, ErrorState } from '../components/LoadingStates'
 import './AdminPortal.css'
 
 /**
@@ -10,10 +11,14 @@ function AdminPortal() {
   const navigate = useNavigate()
   const [projects, setProjects] = useState([])
   const [loading, setLoading] = useState(false)
+  const [loadingProjects, setLoadingProjects] = useState(true)
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [selectedProject, setSelectedProject] = useState(null)
   const [demoMode, setDemoMode] = useState(false)
   const [demoModeLoading, setDemoModeLoading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(null)
+  const [showSuccess, setShowSuccess] = useState(false)
+  const [error, setError] = useState(null)
   
   // Form state
   const [formData, setFormData] = useState({
@@ -63,17 +68,26 @@ function AdminPortal() {
 
   const loadProjects = async () => {
     try {
+      setLoadingProjects(true)
+      setError(null)
       const response = await fetch('http://localhost:5000/api/projects')
+      if (!response.ok) {
+        throw new Error('Failed to load projects')
+      }
       const data = await response.json()
       setProjects(data.projects || [])
     } catch (error) {
       console.error('Error loading projects:', error)
+      setError(error.message)
+    } finally {
+      setLoadingProjects(false)
     }
   }
 
   const handleCreateProject = async (e) => {
     e.preventDefault()
     setLoading(true)
+    setError(null)
 
     try {
       const response = await fetch('http://localhost:5000/api/projects', {
@@ -91,9 +105,14 @@ function AdminPortal() {
       setProjects([...projects, data.project])
       setShowCreateForm(false)
       setFormData({ projectName: '', aiModel: 'openai', apiKey: '' })
-      alert('Project created successfully!')
+      
+      // Show success animation
+      setShowSuccess(true)
+      setTimeout(() => {
+        setShowSuccess(false)
+      }, 2000)
     } catch (error) {
-      alert(`Error: ${error.message}`)
+      setError(error.message)
     } finally {
       setLoading(false)
     }
@@ -104,8 +123,26 @@ function AdminPortal() {
     if (!file) return
 
     setLoading(true)
+    setError(null)
+    setUploadProgress({ fileName: file.name, progress: 0, stage: 'uploading' })
+    
     const formData = new FormData()
     formData.append('document', file)
+
+    // Simulate upload progress
+    const progressInterval = setInterval(() => {
+      setUploadProgress(prev => {
+        if (!prev) return prev
+        if (prev.progress < 90) {
+          return {
+            ...prev,
+            progress: prev.progress + 10,
+            stage: prev.progress < 50 ? 'uploading' : 'processing'
+          }
+        }
+        return prev
+      })
+    }, 300)
 
     try {
       console.log(`Uploading document: ${file.name} to project: ${projectId}`)
@@ -113,6 +150,9 @@ function AdminPortal() {
         method: 'POST',
         body: formData
       })
+
+      clearInterval(progressInterval)
+      setUploadProgress(prev => ({ ...prev, progress: 100, stage: 'complete' }))
 
       const data = await response.json()
 
@@ -132,10 +172,17 @@ function AdminPortal() {
         loadProjects()
       }
       
-      alert(`Document "${file.name}" uploaded and processed successfully! ${data.document?.chunkCount || 0} chunks created.`)
+      // Show success
+      setShowSuccess(true)
+      setTimeout(() => {
+        setShowSuccess(false)
+        setUploadProgress(null)
+      }, 2000)
     } catch (error) {
+      clearInterval(progressInterval)
       console.error('Upload error:', error)
-      alert(`Error: ${error.message || 'Failed to upload document. Please check the console for details.'}`)
+      setError(error.message)
+      setUploadProgress(null)
     } finally {
       setLoading(false)
       e.target.value = '' // Reset file input
@@ -182,6 +229,13 @@ function AdminPortal() {
             </span>
             {demoModeLoading && <span>...</span>}
           </div>
+          <button 
+            className="create-project-btn"
+            onClick={() => navigate('/health')}
+            style={{ backgroundColor: '#2196F3', color: 'white' }}
+          >
+            🏥 Health Dashboard
+          </button>
           <button 
             className="create-project-btn"
             onClick={() => setShowCreateForm(!showCreateForm)}
@@ -232,16 +286,82 @@ function AdminPortal() {
             </div>
 
             <button type="submit" className="submit-btn" disabled={loading}>
-              {loading ? 'Creating...' : 'Create Project'}
+              {loading ? (
+                <>
+                  <span className="button-spinner"></span>
+                  Creating...
+                </>
+              ) : (
+                'Create Project'
+              )}
             </button>
           </form>
+        </div>
+      )}
+
+      {/* Success Animation */}
+      {showSuccess && (
+        <div className="success-overlay">
+          <SuccessAnimation 
+            message="Operation completed successfully!" 
+            showConfetti={true}
+          />
+        </div>
+      )}
+
+      {/* Error Display */}
+      {error && (
+        <div className="error-banner">
+          <ErrorState
+            message={error}
+            onRetry={() => {
+              setError(null)
+              if (uploadProgress) {
+                // Retry upload if that's what failed
+                const fileInput = document.querySelector('input[type="file"]')
+                if (fileInput && fileInput.files[0]) {
+                  handleFileUpload({ target: fileInput }, selectedProject || projects[0]?.projectId)
+                }
+              } else {
+                loadProjects()
+              }
+            }}
+            retryLabel="Retry"
+          />
+        </div>
+      )}
+
+      {/* Upload Progress */}
+      {uploadProgress && (
+        <div className="upload-progress-banner">
+          <div className="upload-progress-header">
+            <span>📤 {uploadProgress.fileName}</span>
+            <span>{uploadProgress.progress}%</span>
+          </div>
+          <div className="upload-progress-bar">
+            <div 
+              className="upload-progress-fill"
+              style={{ width: `${uploadProgress.progress}%` }}
+            />
+          </div>
+          <div className="upload-progress-stage">
+            {uploadProgress.stage === 'uploading' && 'Uploading file...'}
+            {uploadProgress.stage === 'processing' && 'Processing and indexing...'}
+            {uploadProgress.stage === 'complete' && 'Complete!'}
+          </div>
         </div>
       )}
 
       {/* Projects List */}
       <div className="projects-list">
         <h2>Projects ({projects.length})</h2>
-        {projects.length === 0 ? (
+        {loadingProjects ? (
+          <div className="projects-grid">
+            {[1, 2, 3].map(i => (
+              <ProjectSkeleton key={i} />
+            ))}
+          </div>
+        ) : projects.length === 0 ? (
           <div className="empty-state">
             <p>No projects yet. Create your first project to get started!</p>
           </div>
@@ -264,13 +384,24 @@ function AdminPortal() {
                   <p><strong>Created:</strong> {new Date(project.createdAt).toLocaleDateString()}</p>
                 </div>
                 <div className="project-actions">
-                  <label className="upload-btn">
-                    Upload Document
+                  <label className={`upload-btn ${loading && selectedProject === project.projectId ? 'uploading' : ''}`}>
+                    {loading && selectedProject === project.projectId ? (
+                      <>
+                        <span className="button-spinner"></span>
+                        Uploading...
+                      </>
+                    ) : (
+                      'Upload Document'
+                    )}
                     <input
                       type="file"
                       accept=".pdf,.docx,.txt"
-                      onChange={(e) => handleFileUpload(e, project.projectId)}
+                      onChange={(e) => {
+                        setSelectedProject(project.projectId)
+                        handleFileUpload(e, project.projectId)
+                      }}
                       style={{ display: 'none' }}
+                      disabled={loading}
                     />
                   </label>
                   <button

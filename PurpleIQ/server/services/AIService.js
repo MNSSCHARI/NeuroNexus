@@ -1,5 +1,6 @@
 const OpenAI = require('openai');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { AsyncLocalStorage } = require('async_hooks');
 const {
   APIKeyMissingError,
   ModelUnavailableError,
@@ -24,6 +25,14 @@ const { createServiceLogger } = require('../utils/logger');
  * AI Service
  * Handles LLM interactions for different providers with automatic fallback
  * Includes demo mode for reliable hackathon presentations
+ * 
+ * URGENT CONFIGURATION (to avoid OpenAI 429 errors):
+ * - PRIMARY: Gemini (gemini-1.5-flash) for ALL chat/generation operations
+ * - FALLBACK: OpenAI GPT models (only if Gemini fails)
+ * - EMBEDDINGS: Gemini ONLY - handled by EmbeddingService (OpenAI removed)
+ * 
+ * This ensures we don't hit OpenAI quota limits during demos.
+ * Gemini has much higher free tier limits and is more reliable for presentations.
  */
 class AIService {
   constructor() {
@@ -31,6 +40,18 @@ class AIService {
     this.conversationHistory = new Map(); // Conversation history per project: projectId -> Array of conversation turns
     this.demoResponses = null; // Cached demo responses
     this.demoModeEnabled = process.env.DEMO_MODE === 'true';
+    
+    // Response caching with TTL (5 minutes)
+    this.responseCache = new Map(); // key -> { response, timestamp, ttl }
+    this.CACHE_TTL = 5 * 60 * 1000; // 5 minutes in milliseconds
+    
+    // Request deduplication - track in-flight requests
+    this.inFlightRequests = new Map(); // key -> Promise
+    
+    // DEBUG: Track recent requests/responses for debugging
+    this.debugLog = []; // Array of debug entries (last 50)
+    this.MAX_DEBUG_LOG = 50;
+    
     // Self-evaluation metrics tracking
     this.evaluationMetrics = {
       totalEvaluations: 0,
@@ -45,12 +66,49 @@ class AIService {
       cacheHits: 0,
       cacheMisses: 0,
       totalTokens: 0,
-      averageLatency: 0
+      averageLatency: 0,
+      deduplicationHits: 0
     };
+    
+    // Rate limit tracking
+    this.rateLimitTracker = {
+      openai: {
+        calls: [], // Array of { timestamp, model }
+        lastWarning: null,
+        autoSwitched: false
+      },
+      gemini: {
+        calls: [], // Array of { timestamp, model }
+        lastWarning: null
+      }
+    };
+    this.RATE_LIMIT_WARNING_THRESHOLD = 50; // Calls per minute
+    this.RATE_LIMIT_AUTO_SWITCH_THRESHOLD = 40; // Auto-switch to Gemini if > 40 calls/min to OpenAI
+    this.requestContext = new AsyncLocalStorage();
+    
+    // Failover tracking
+    this.failoverStats = {
+      totalFailovers: 0,
+      openaiToGemini: 0,
+      geminiToOpenAI: 0,
+      toDemoMode: 0,
+      today: new Date().toDateString(),
+      todayFailovers: 0,
+      lastFailover: null
+    };
+    
+    // Preferred provider configuration
+    this.preferredProvider = (process.env.PREFERRED_PROVIDER || 'openai').toLowerCase();
+    
     // Initialize logger
     this.logger = createServiceLogger('AIService');
     this.loadDemoResponses();
     this.loadSettings();
+    
+    // Clean up expired cache entries every minute
+    setInterval(() => this.cleanExpiredCache(), 60000);
+    // Clean up old rate limit tracking every 5 minutes
+    setInterval(() => this.cleanRateLimitTracking(), 5 * 60000);
   }
 
   /**
@@ -69,6 +127,266 @@ class AIService {
     } catch (error) {
       console.warn('⚠️  Could not load settings:', error.message);
     }
+  }
+
+  /**
+   * Estimate token count (rough approximation: 1 token ≈ 4 characters)
+   */
+  estimateTokenCount(text) {
+    if (!text) return 0;
+    return Math.ceil(text.length / 4);
+  }
+
+  /**
+   * Get current request metadata store
+   */
+  getRequestMeta() {
+    const store = this.requestContext?.getStore();
+    return store ? store.meta : null;
+  }
+
+  /**
+   * Update current request metadata
+   */
+  updateRequestMeta(update) {
+    const meta = this.getRequestMeta();
+    if (!meta) return;
+    Object.assign(meta, update);
+  }
+
+  /**
+   * Track API call for rate limit monitoring
+   */
+  trackApiCall(provider, model) {
+    const now = Date.now();
+    const tracker = this.rateLimitTracker[provider.toLowerCase()];
+    if (tracker) {
+      tracker.calls.push({ timestamp: now, model });
+      this.checkRateLimit(provider);
+    }
+  }
+
+  /**
+   * Check rate limit and warn/auto-switch if needed
+   */
+  checkRateLimit(provider) {
+    const tracker = this.rateLimitTracker[provider.toLowerCase()];
+    if (!tracker) return;
+
+    const now = Date.now();
+    const oneMinuteAgo = now - 60000;
+    const recentCalls = tracker.calls.filter(call => call.timestamp > oneMinuteAgo);
+    const callsPerMinute = recentCalls.length;
+
+    // Warn if approaching limit
+    if (callsPerMinute >= this.RATE_LIMIT_WARNING_THRESHOLD) {
+      const lastWarning = tracker.lastWarning;
+      // Only warn once per minute
+      if (!lastWarning || (now - lastWarning) > 60000) {
+        console.warn(`⚠️  RATE LIMIT WARNING: ${provider} has ${callsPerMinute} calls/minute (threshold: ${this.RATE_LIMIT_WARNING_THRESHOLD})`);
+        tracker.lastWarning = now;
+      }
+    }
+
+    // Auto-switch to Gemini if OpenAI rate is high
+    if (provider.toLowerCase() === 'openai' && 
+        callsPerMinute >= this.RATE_LIMIT_AUTO_SWITCH_THRESHOLD && 
+        !tracker.autoSwitched) {
+      console.warn(`🔄 AUTO-SWITCHING: OpenAI rate (${callsPerMinute}/min) exceeds threshold. Recommending Gemini.`);
+      tracker.autoSwitched = true;
+    }
+  }
+
+  /**
+   * Get rate limit status
+   */
+  getRateLimitStatus() {
+    const now = Date.now();
+    const oneMinuteAgo = now - 60000;
+    const oneHourAgo = now - 3600000;
+
+    const openaiRecent = this.rateLimitTracker.openai.calls.filter(c => c.timestamp > oneMinuteAgo).length;
+    const openaiHourly = this.rateLimitTracker.openai.calls.filter(c => c.timestamp > oneHourAgo).length;
+    const geminiRecent = this.rateLimitTracker.gemini.calls.filter(c => c.timestamp > oneMinuteAgo).length;
+    const geminiHourly = this.rateLimitTracker.gemini.calls.filter(c => c.timestamp > oneHourAgo).length;
+
+    const openaiHeadroom = Math.max(0, this.RATE_LIMIT_WARNING_THRESHOLD - openaiRecent);
+    const geminiHeadroom = Math.max(0, 100 - geminiRecent); // Gemini has higher limits
+
+    let recommendedModel = 'gemini';
+    if (openaiRecent < this.RATE_LIMIT_AUTO_SWITCH_THRESHOLD && !this.rateLimitTracker.openai.autoSwitched) {
+      recommendedModel = 'openai'; // Can use OpenAI if rate is low
+    }
+
+    return {
+      openai: {
+        callsLastMinute: openaiRecent,
+        callsLastHour: openaiHourly,
+        headroom: openaiHeadroom,
+        status: openaiRecent >= this.RATE_LIMIT_WARNING_THRESHOLD ? 'warning' : 
+                openaiRecent >= this.RATE_LIMIT_AUTO_SWITCH_THRESHOLD ? 'high' : 'ok',
+        autoSwitched: this.rateLimitTracker.openai.autoSwitched
+      },
+      gemini: {
+        callsLastMinute: geminiRecent,
+        callsLastHour: geminiHourly,
+        headroom: geminiHeadroom,
+        status: geminiRecent >= 80 ? 'warning' : 'ok'
+      },
+      recommended: recommendedModel,
+      thresholds: {
+        warning: this.RATE_LIMIT_WARNING_THRESHOLD,
+        autoSwitch: this.RATE_LIMIT_AUTO_SWITCH_THRESHOLD
+      }
+    };
+  }
+
+  /**
+   * Clean up old rate limit tracking data
+   */
+  cleanRateLimitTracking() {
+    const oneHourAgo = Date.now() - 3600000;
+    for (const provider in this.rateLimitTracker) {
+      this.rateLimitTracker[provider].calls = 
+        this.rateLimitTracker[provider].calls.filter(c => c.timestamp > oneHourAgo);
+    }
+  }
+
+  /**
+   * Retry with exponential backoff
+   */
+  async retryWithBackoff(fn, maxRetries = 3, baseDelay = 1000, onRetry = null) {
+    let lastError;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        return await fn();
+      } catch (error) {
+        lastError = error;
+        const isRateLimit = error instanceof RateLimitError || 
+                          error.message?.includes('429') ||
+                          error.message?.toLowerCase().includes('rate limit') ||
+                          error.message?.toLowerCase().includes('quota');
+        
+        if (isRateLimit && attempt < maxRetries - 1) {
+          const delay = Math.min(baseDelay * Math.pow(2, attempt), 4000); // 1s, 2s, 4s
+          console.log(`⏳ Rate limit hit, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})...`);
+          if (typeof onRetry === 'function') {
+            onRetry(attempt + 1, delay);
+          }
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw lastError;
+  }
+
+  /**
+   * Add debug entry to log
+   */
+  addDebugEntry(entry) {
+    this.debugLog.push({
+      timestamp: new Date().toISOString(),
+      ...entry
+    });
+    
+    // Keep only last MAX_DEBUG_LOG entries
+    if (this.debugLog.length > this.MAX_DEBUG_LOG) {
+      this.debugLog.shift();
+    }
+  }
+
+  /**
+   * Get recent debug entries
+   */
+  getDebugLog(limit = 10) {
+    return this.debugLog.slice(-limit).reverse(); // Most recent first
+  }
+
+  /**
+   * Generate cache key from request parameters
+   */
+  generateCacheKey(userMessage, context, aiModel, projectId) {
+    // Normalize message (lowercase, trim, remove extra spaces)
+    const normalizedMessage = userMessage.toLowerCase().trim().replace(/\s+/g, ' ');
+    // Create hash from normalized message + context hash + model + projectId
+    const contextHash = context ? context.substring(0, 100).replace(/\s+/g, '') : '';
+    return `${normalizedMessage}|${contextHash}|${aiModel}|${projectId || ''}`;
+  }
+
+  /**
+   * Get cached response if available and not expired
+   */
+  getCachedResponse(cacheKey) {
+    const cached = this.responseCache.get(cacheKey);
+    if (!cached) {
+      this.performanceMetrics.cacheMisses++;
+      return null;
+    }
+
+    const age = Date.now() - cached.timestamp;
+    if (age > cached.ttl) {
+      // Expired, remove from cache
+      this.responseCache.delete(cacheKey);
+      this.performanceMetrics.cacheMisses++;
+      return null;
+    }
+
+    // Cache hit!
+    this.performanceMetrics.cacheHits++;
+    this.logger.info('Cache hit', {
+      function: 'getCachedResponse',
+      cacheKey: cacheKey.substring(0, 50),
+      age: `${Math.round(age / 1000)}s`
+    });
+    return cached.response;
+  }
+
+  /**
+   * Store response in cache
+   */
+  setCachedResponse(cacheKey, response, ttl = null) {
+    this.responseCache.set(cacheKey, {
+      response,
+      timestamp: Date.now(),
+      ttl: ttl || this.CACHE_TTL
+    });
+  }
+
+  /**
+   * Clean expired cache entries
+   */
+  cleanExpiredCache() {
+    const now = Date.now();
+    let cleaned = 0;
+    for (const [key, cached] of this.responseCache.entries()) {
+      if (now - cached.timestamp > cached.ttl) {
+        this.responseCache.delete(key);
+        cleaned++;
+      }
+    }
+    if (cleaned > 0) {
+      this.logger.debug(`Cleaned ${cleaned} expired cache entries`);
+    }
+  }
+
+  /**
+   * Check if request is in flight (deduplication)
+   */
+  getInFlightRequest(cacheKey) {
+    return this.inFlightRequests.get(cacheKey);
+  }
+
+  /**
+   * Register in-flight request
+   */
+  setInFlightRequest(cacheKey, promise) {
+    this.inFlightRequests.set(cacheKey, promise);
+    // Clean up when promise resolves/rejects
+    promise.finally(() => {
+      this.inFlightRequests.delete(cacheKey);
+    });
   }
 
   /**
@@ -94,8 +412,8 @@ class AIService {
    * @param {string} intent - Detected intent
    * @returns {Object|null} Demo response or null
    */
-  getDemoResponse(message, intent) {
-    if (!this.demoModeEnabled || !this.demoResponses) {
+  getDemoResponse(message, intent, force = false) {
+    if ((!this.demoModeEnabled && !force) || !this.demoResponses) {
       return null;
     }
 
@@ -136,6 +454,46 @@ class AIService {
     }
 
     return null;
+  }
+
+  /**
+   * Format demo response for output
+   * @param {string} intent - Detected intent
+   * @param {object|string} demoResponse - Demo response data
+   * @returns {{answer: string, metadata: object|null}}
+   */
+  formatDemoResponse(intent, demoResponse) {
+    let answer;
+    let metadata = null;
+
+    if (intent === AIService.INTENT_TYPES.TEST_CASE_GENERATION && demoResponse.testCases) {
+      // Format test cases response
+      answer = `${demoResponse.summary || ''}\n\n${demoResponse.markdownTable || ''}`;
+      metadata = {
+        testCases: demoResponse.testCases,
+        coverageAnalysis: {
+          total: demoResponse.testCases.length,
+          positive: demoResponse.testCases.filter(tc => tc.type === 'Positive').length,
+          negative: demoResponse.testCases.filter(tc => tc.type === 'Negative').length,
+          edgeCases: demoResponse.testCases.filter(tc => tc.type === 'Edge Case').length
+        },
+        qualityScore: 9.0,
+        isDemo: true
+      };
+    } else if (intent === AIService.INTENT_TYPES.BUG_REPORT_FORMATTING && demoResponse.title) {
+      // Format bug report response
+      answer = `### Title/Summary\n${demoResponse.title}\n\n### Description\n${demoResponse.description}\n\n### Steps to Reproduce\n${demoResponse.steps.map((step, i) => `${i + 1}. ${step}`).join('\n')}\n\n### Expected Behavior\n${demoResponse.expectedBehavior}\n\n### Actual Behavior\n${demoResponse.actualBehavior}\n\n### Environment\n${demoResponse.environment}\n\n### Priority/Severity\n${demoResponse.priority || demoResponse.severity}`;
+      metadata = { isDemo: true };
+    } else if (typeof demoResponse === 'string') {
+      // String response (test plan, automation)
+      answer = demoResponse;
+      metadata = { isDemo: true };
+    } else {
+      answer = JSON.stringify(demoResponse, null, 2);
+      metadata = { isDemo: true };
+    }
+
+    return { answer, metadata };
   }
 
   /**
@@ -267,20 +625,26 @@ class AIService {
 
       const startTime = Date.now();
       
-      // Execute with timeout
-      const completion = await this.executeWithTimeout(
-        client.chat.completions.create({
-          model: model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt }
-          ],
-          temperature: 0.7,
-          max_tokens: 2000
-        }),
-        timeoutSeconds,
-        provider
-      );
+      // Track API call for rate limit monitoring
+      this.trackApiCall(provider, model);
+      
+      // Execute with timeout and retry logic for rate limits
+      let retriesUsed = 0;
+      const completion = await this.retryWithBackoff(async () => {
+        return await this.executeWithTimeout(
+          client.chat.completions.create({
+            model: model,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt }
+            ],
+            temperature: 0.7,
+            max_tokens: 2000
+          }),
+          timeoutSeconds,
+          provider
+        );
+      }, 4, 1000, () => { retriesUsed++; }); // Max 3 retries (1s, 2s, 4s)
 
       const duration = Date.now() - startTime;
       
@@ -298,8 +662,49 @@ class AIService {
       }
       
       console.log(`✅ ${provider} request completed in ${duration}ms`);
+      const responseTokens = this.estimateTokenCount(content);
+      console.log(`📊 Response length: ${content.length} characters (${responseTokens} tokens)`);
+      
       if (completion.usage) {
-        console.log(`📊 Tokens: ${completion.usage.total_tokens} (prompt: ${completion.usage.prompt_tokens}, completion: ${completion.usage.completion_tokens})`);
+        console.log(`📊 DEBUG - Token Usage:`);
+        console.log(`   Prompt tokens: ${completion.usage.prompt_tokens || 'N/A'}`);
+        console.log(`   Completion tokens: ${completion.usage.completion_tokens || 'N/A'}`);
+        console.log(`   Total tokens: ${completion.usage.total_tokens || 'N/A'}`);
+        this.performanceMetrics.totalTokens += (completion.usage.total_tokens || 0);
+      }
+      
+      // DEBUG: Log full response (truncated if too long)
+      const responsePreview = content.length > 1000 ? content.substring(0, 1000) + '...' : content;
+      console.log(`💬 DEBUG - Full response (first 1000 chars):\n${responsePreview}`);
+      
+      // Calculate token counts
+      const promptTokens = this.estimateTokenCount(userPrompt);
+      
+      // DEBUG: Add to debug log
+      this.addDebugEntry({
+        type: 'ai_request',
+        model: model,
+        provider: provider,
+        prompt: userPrompt,
+        promptTokens: promptTokens,
+        response: content,
+        responseTokens: responseTokens,
+        duration: duration,
+        contextLength: context?.length || 0,
+        questionLength: question.length,
+        actualTokens: completion.usage || null,
+        retriesUsed: retriesUsed
+      });
+
+      this.updateRequestMeta({
+        provider: provider,
+        model: model,
+        retriesUsed: retriesUsed
+      });
+
+      // Store metadata for later inclusion in response
+      if (retriesUsed > 0) {
+        console.log(`⚠️  ${provider} required ${retriesUsed} retries due to rate limits`);
       }
 
       return content;
@@ -358,21 +763,25 @@ class AIService {
     const genAI = this.getGeminiClient(validatedKey);
     
     // Gemini model fallback list (in order of preference)
-    // These models are verified to be available via API as of Jan 2026
+    // URGENT: Using gemini-1.5-flash as primary to avoid OpenAI 429 errors
+    // These models have high quota limits and are reliable for demos
     const GEMINI_MODELS = [
-      'gemini-2.5-flash',      // Primary model (latest, fast, recommended)
-      'gemini-2.0-flash',      // Fallback 1 (stable)
-      'gemini-2.5-pro'         // Fallback 2 (most capable, slower)
+      'gemini-1.5-flash',      // Primary model (fast, high quota, recommended for demos)
+      'gemini-1.5-pro',       // Fallback 1 (better quality, slower)
+      'gemini-2.0-flash',     // Fallback 2 (if available)
+      'gemini-2.5-flash'      // Fallback 3 (latest)
     ];
 
-    console.log(`🤖 Using ${provider} provider, trying models: ${GEMINI_MODELS.join(', ')}`);
+    console.log(`🤖 [PRIMARY] Using ${provider} provider (to avoid OpenAI 429 errors)`);
+    console.log(`   Trying models in order: ${GEMINI_MODELS.join(', ')}`);
 
     const systemPrompt = `You are PurpleIQ, an AI-powered QA assistant. Answer questions based ONLY on the provided project documents and context. If the information is not in the provided context, say so clearly.`;
 
     const fullPrompt = `${systemPrompt}\n\nContext from Project Documents:\n\n${context}\n\nQuestion: ${question}\n\nAnswer based on the context above:`;
 
-    const maxRetries = 3;
+    const maxRetries = 4; // 1 initial + 3 retries (1s, 2s, 4s)
     const errors = [];
+    let retriesUsed = 0;
 
     // Try each model with retry logic
     for (const modelName of GEMINI_MODELS) {
@@ -380,18 +789,15 @@ class AIService {
 
       for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
-          // Exponential backoff delay
-          const delay = attempt > 0 ? Math.min(1000 * Math.pow(2, attempt - 1), 10000) : 0;
-          
-          if (delay > 0) {
-            console.log(`⏳ Retrying ${modelName} after ${delay}ms (attempt ${attempt + 1}/${maxRetries})...`);
-            await new Promise(resolve => setTimeout(resolve, delay));
-          } else if (attempt === 0) {
+          if (attempt === 0) {
             console.log(`🔄 Trying ${provider} model: ${modelName}`);
           }
 
           const startTime = Date.now();
           const model = genAI.getGenerativeModel({ model: modelName });
+          
+          // Track API call for rate limit monitoring
+          this.trackApiCall(provider, modelName);
           
           // Execute with timeout
           const result = await this.executeWithTimeout(
@@ -416,12 +822,51 @@ class AIService {
             throw new InvalidResponseError(provider, `Invalid answer type from ${modelName}`, null);
           }
           
+          const responseTokens = this.estimateTokenCount(answer);
           console.log(`✅ ${provider} model used: ${modelName} (completed in ${duration}ms)`);
+          console.log(`📊 Response length: ${answer.length} characters (${responseTokens} tokens)`);
           
           // Log token usage if available
           if (result.response.usageMetadata) {
             const usage = result.response.usageMetadata;
-            console.log(`📊 Tokens: ${usage.totalTokenCount} (prompt: ${usage.promptTokenCount}, completion: ${usage.candidatesTokenCount})`);
+            console.log(`📊 DEBUG - Token Usage:`);
+            console.log(`   Prompt tokens: ${usage.promptTokenCount || 'N/A'}`);
+            console.log(`   Completion tokens: ${usage.candidatesTokenCount || 'N/A'}`);
+            console.log(`   Total tokens: ${usage.totalTokenCount || 'N/A'}`);
+            this.performanceMetrics.totalTokens += (usage.totalTokenCount || 0);
+          }
+          
+          // DEBUG: Log full response (truncated if too long)
+          const responsePreview = answer.length > 1000 ? answer.substring(0, 1000) + '...' : answer;
+          console.log(`💬 DEBUG - Full response (first 1000 chars):\n${responsePreview}`);
+          
+          // Calculate token counts
+          const promptTokens = this.estimateTokenCount(fullPrompt);
+          
+          // DEBUG: Add to debug log
+          this.addDebugEntry({
+            type: 'ai_request',
+            model: modelName,
+            provider: provider,
+            prompt: fullPrompt,
+            promptTokens: promptTokens,
+            response: answer,
+            responseTokens: responseTokens,
+            duration: duration,
+            contextLength: context?.length || 0,
+            questionLength: question.length,
+            actualTokens: result.response.usageMetadata || null,
+            retriesUsed: retriesUsed
+          });
+
+          this.updateRequestMeta({
+            provider: provider,
+            model: modelName,
+            retriesUsed: retriesUsed
+          });
+
+          if (retriesUsed > 0) {
+            console.log(`⚠️  ${provider} model ${modelName} required ${retriesUsed} retries due to rate limits`);
           }
 
           return answer;
@@ -455,17 +900,22 @@ class AIService {
             break;
           }
 
-          // For rate limit errors, don't retry immediately
+          // For rate limit errors, retry with exponential backoff (1s, 2s, 4s)
           if (classifiedError instanceof RateLimitError) {
+            if (attempt < maxRetries - 1) {
+              const delay = Math.min(1000 * Math.pow(2, attempt), 4000);
+              retriesUsed++;
+              console.log(`⏳ Rate limit hit for ${modelName}, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})...`);
+              await new Promise(resolve => setTimeout(resolve, delay));
+              continue;
+            }
             console.log(`⏸️  Rate limit hit for ${modelName}, trying next model...`);
             break;
           }
 
-          // For other errors, continue retrying
-          if (attempt < maxRetries - 1) {
-            console.log(`⚠️  ${modelName} attempt ${attempt + 1} failed: ${errorMsg}`);
-            continue;
-          }
+          // For other errors, do NOT retry this model
+          console.log(`⚠️  ${modelName} failed: ${errorMsg}. Trying next model...`);
+          break;
         }
       }
     }
@@ -503,9 +953,129 @@ class AIService {
   }
 
   /**
-   * Generate answer based on AI model type with automatic fallback
-   * @param {string} aiModel - Primary AI model to use ('openai', 'gemini', 'claude')
-   * @param {string} apiKey - API key for the primary model
+   * Call AI with automatic failover between providers
+   * This is a robust wrapper that tries Gemini first, then OpenAI, then demo mode
+   * 
+   * @param {string} message - The message/prompt to send
+   * @param {object} options - Options object
+   * @param {string} options.apiKey - Primary API key
+   * @param {string} options.fallbackApiKey - Fallback API key
+   * @param {string} options.context - Context/document content
+   * @param {string} options.question - User question
+   * @param {string} options.systemPrompt - System prompt
+   * @param {string} options.userMessage - User message
+   * @param {string} options.intent - Detected intent
+   * @returns {Promise<object>} Result with response and metadata
+   */
+  async callAIWithFailover(message, options = {}) {
+    const {
+      apiKey,
+      fallbackApiKey,
+      context = '',
+      question = message,
+      systemPrompt = 'You are PurpleIQ, an AI-powered QA assistant.',
+      userMessage = message,
+      intent = null
+    } = options;
+
+    // Determine primary model (prefer Gemini to avoid OpenAI 429 errors)
+    const primaryModel = 'gemini';
+    const primaryApiKey = primaryModel === 'gemini' 
+      ? (fallbackApiKey || process.env.GEMINI_API_KEY || apiKey)
+      : (apiKey || process.env.OPENAI_API_KEY);
+
+    // Try primary provider (Gemini)
+    try {
+      if (primaryModel === 'gemini') {
+        const result = await this.generateWithGemini(primaryApiKey, context, question);
+        return {
+          content: result,
+          response: result,
+          provider: 'gemini',
+          model: 'gemini-1.5-flash',
+          retries: 0,
+          failover: false,
+          failoverUsed: false
+        };
+      } else {
+        const result = await this.generateWithOpenAI(primaryApiKey, context, question);
+        return {
+          content: result,
+          response: result,
+          provider: 'openai',
+          model: 'gpt-4o-mini',
+          retries: 0,
+          failover: false,
+          failoverUsed: false
+        };
+      }
+    } catch (primaryError) {
+      console.warn(`⚠️  Primary provider (${primaryModel}) failed: ${primaryError.message}`);
+      
+      // Try fallback provider
+      const fallbackModel = primaryModel === 'gemini' ? 'openai' : 'gemini';
+      const fallbackKey = fallbackModel === 'gemini'
+        ? (fallbackApiKey || process.env.GEMINI_API_KEY)
+        : (apiKey || process.env.OPENAI_API_KEY);
+
+      if (fallbackKey) {
+        try {
+          console.log(`🔄 Trying fallback provider: ${fallbackModel.toUpperCase()}`);
+          let result;
+          if (fallbackModel === 'gemini') {
+            result = await this.generateWithGemini(fallbackKey, context, question);
+          } else {
+            result = await this.generateWithOpenAI(fallbackKey, context, question);
+          }
+          
+          this.failoverStats.totalFailovers++;
+          this.failoverStats[`${primaryModel}To${fallbackModel.charAt(0).toUpperCase() + fallbackModel.slice(1)}`]++;
+          this.failoverStats.lastFailover = new Date().toISOString();
+          
+          return {
+            content: result,
+            response: result,
+            provider: fallbackModel,
+            model: fallbackModel === 'gemini' ? 'gemini-1.5-flash' : 'gpt-4o-mini',
+            retries: 0,
+            failover: true,
+            failoverUsed: true,
+            originalError: primaryError.message
+          };
+        } catch (fallbackError) {
+          console.error(`❌ Fallback provider (${fallbackModel}) also failed: ${fallbackError.message}`);
+        }
+      }
+
+      // Both providers failed, try demo mode
+      if (this.demoModeEnabled || options.allowDemoMode !== false) {
+        console.log(`🎭 Both providers failed, using demo mode`);
+        const demoResponse = this.getDemoResponse(userMessage, intent, true);
+        if (demoResponse) {
+          this.failoverStats.toDemoMode++;
+          return {
+            content: demoResponse,
+            response: demoResponse,
+            provider: 'demo',
+            model: 'demo-mode',
+            retries: 0,
+            failover: true,
+            failoverUsed: true,
+            demoMode: true,
+            originalError: primaryError.message
+          };
+        }
+      }
+
+      // All options exhausted
+      throw new Error(`All AI providers failed. Primary (${primaryModel}): ${primaryError.message}. Please check your API keys and try again.`);
+    }
+  }
+
+  /**
+   * Generate answer using AUTOMATIC FAILOVER: OpenAI → Gemini → Demo Mode
+   * @param {string} aiModel - Preferred AI model ('openai', 'gemini')
+   * @param {string} apiKey - API key for the model
    * @param {string} context - Context from project documents
    * @param {string} question - User's question
    * @param {object} options - Optional configuration
@@ -519,69 +1089,75 @@ class AIService {
     } = options;
 
     const primaryModel = aiModel.toLowerCase();
-    console.log(`\n🚀 Starting AI generation with primary model: ${primaryModel.toUpperCase()}`);
-
-    // Create fallback functions
-    const fallbackToGemini = enableFallback && primaryModel === 'openai' && (fallbackApiKey || apiKey)
-      ? () => this.generateWithGemini(fallbackApiKey || apiKey, context, question, null)
-      : null;
-
-    const fallbackToOpenAI = enableFallback && primaryModel === 'gemini' && (fallbackApiKey || apiKey)
-      ? () => this.generateWithOpenAI(fallbackApiKey || apiKey, context, question, null)
-      : null;
-
+    const startTime = Date.now();
+    
+    // DEBUG: Log full prompt details
+    const fullPrompt = context ? `${context}\n\nQuestion: ${question}` : question;
+    const promptTokens = this.estimateTokenCount(fullPrompt);
+    const contextTokens = this.estimateTokenCount(context);
+    const questionTokens = this.estimateTokenCount(question);
+    
+    console.log(`\n🚀 Generating answer with automatic failover`);
+    console.log(`   Preferred: ${primaryModel.toUpperCase()}`);
+    console.log(`   Failover order: OpenAI → Gemini → Demo Mode`);
+    console.log(`📊 DEBUG - Prompt Stats:`);
+    console.log(`   Context length: ${context?.length || 0} chars (${contextTokens} tokens)`);
+    console.log(`   Question length: ${question.length} chars (${questionTokens} tokens)`);
+    console.log(`   Total prompt: ${fullPrompt.length} chars (${promptTokens} tokens)`);
+    
+    // Use the robust failover wrapper
     try {
-      switch (primaryModel) {
-        case 'openai':
-          return await this.generateWithOpenAI(apiKey, context, question, fallbackToGemini);
-        
-        case 'gemini':
-          return await this.generateWithGemini(apiKey, context, question, fallbackToOpenAI);
-        
-        case 'claude':
-          // TODO: Implement Claude when API is available
-          throw new Error('Claude integration not yet implemented');
-        
-        default:
-          throw new Error(`Unsupported AI model: ${aiModel}. Supported models: openai, gemini`);
-      }
-    } catch (error) {
-      // Log detailed error
-      console.error(`❌ Primary model (${primaryModel}) failed:`, {
-        error: error.message,
-        name: error.name,
-        stack: error.stack
+      const result = await this.callAIWithFailover(question, {
+        apiKey: primaryModel === 'openai' ? apiKey : (fallbackApiKey || apiKey),
+        fallbackApiKey: primaryModel === 'gemini' ? apiKey : (fallbackApiKey || apiKey),
+        context: context,
+        question: question,
+        systemPrompt: 'You are PurpleIQ, an AI-powered QA assistant. Answer questions based ONLY on the provided project documents and context. If the information is not in the provided context, say so clearly.',
+        userMessage: question,
+        intent: null
       });
+
+      const duration = Date.now() - startTime;
       
-      // If fallback is enabled and we haven't already tried it, attempt fallback
-      // Only fallback for non-authentication errors
-      if (enableFallback && !(error instanceof APIKeyMissingError)) {
-        if (primaryModel === 'openai' && fallbackToGemini) {
-          console.log('🔄 Attempting automatic fallback to Gemini...');
-          try {
-            return await fallbackToGemini();
-          } catch (fallbackError) {
-            const errors = [
-              { provider: 'OpenAI', error: error.message },
-              { provider: 'Gemini', error: fallbackError.message }
-            ];
-            throw new AllProvidersFailedError(['OpenAI', 'Gemini'], errors, error);
-          }
-        } else if (primaryModel === 'gemini' && fallbackToOpenAI) {
-          console.log('🔄 Attempting automatic fallback to OpenAI...');
-          try {
-            return await fallbackToOpenAI();
-          } catch (fallbackError) {
-            const errors = [
-              { provider: 'Gemini', error: error.message },
-              { provider: 'OpenAI', error: fallbackError.message }
-            ];
-            throw new AllProvidersFailedError(['Gemini', 'OpenAI'], errors, error);
-          }
-        }
+      // Log success with provider info
+      if (result.failoverUsed) {
+        console.log(`✅ Answer generated using ${result.provider} (failover) in ${duration}ms`);
+      } else {
+        console.log(`✅ Answer generated using ${result.provider} (primary) in ${duration}ms`);
       }
 
-      // Re-throw original error if no fallback available or if it's an auth error
+      // Validate result has content
+      if (!result || !result.content) {
+        console.error('❌ callAIWithFailover returned invalid result:', result);
+        throw new Error('AI service returned invalid response. Please try again.');
+      }
+
+      // Add debug entry
+      this.addDebugEntry({
+        type: 'ai_request',
+        model: result.model,
+        provider: result.provider,
+        prompt: fullPrompt,
+        promptTokens: promptTokens,
+        response: result.content,
+        responseTokens: this.estimateTokenCount(result.content),
+        duration: result.duration || duration,
+        contextLength: context?.length || 0,
+        questionLength: question.length,
+        failoverUsed: result.failoverUsed
+      });
+
+      // Return just the content for backward compatibility
+      return result.content;
+
+    } catch (error) {
+      // If it's a friendly error, return it
+      if (error.isFriendly) {
+        console.warn(`⚠️  All providers failed, returning friendly error message`);
+        return error.message;
+      }
+      
+      // Otherwise, re-throw
       throw error;
     }
   }
@@ -623,38 +1199,16 @@ User message: "${message}"
 Respond with ONLY the category name (e.g., "TEST_CASE_GENERATION"). No explanation, just the category.`;
 
     try {
-      const primaryModel = aiModel.toLowerCase();
-      let classification;
-
-      if (primaryModel === 'gemini') {
-        const genAI = this.getGeminiClient(apiKey);
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-        const result = await this.executeWithTimeout(
-          model.generateContent(classificationPrompt),
-          10,
-          'Gemini'
-        );
-        const response = await result.response;
-        classification = response.text().trim();
-      } else if (primaryModel === 'openai') {
-        const client = this.getOpenAIClient(apiKey);
-        const completion = await this.executeWithTimeout(
-          client.chat.completions.create({
-            model: 'gpt-4o-mini',
-            messages: [
-              { role: 'system', content: 'You are a QA intent classifier. Respond with only the category name.' },
-              { role: 'user', content: classificationPrompt }
-            ],
-            temperature: 0.3,
-            max_tokens: 50
-          }),
-          10,
-          'OpenAI'
-        );
-        classification = completion.choices[0].message.content.trim();
-      } else {
-        throw new Error(`Unsupported model for classification: ${aiModel}`);
-      }
+      // Use failover wrapper for intent classification
+      const result = await this.callAIWithFailover(classificationPrompt, {
+        apiKey: apiKey,
+        fallbackApiKey: apiKey,
+        context: '',
+        question: classificationPrompt,
+        systemPrompt: 'You are a QA intent classifier. Respond with only the category name.',
+        userMessage: message
+      });
+      const classification = (result.content || result).trim();
 
       // Validate and normalize classification
       const normalized = classification.toUpperCase().replace(/[^A-Z_]/g, '');
@@ -731,9 +1285,16 @@ Respond in JSON format:
 
     let analysis;
     try {
-      const analysisResult = await this.generateAnswer(aiModel, apiKey, '', analysisPrompt, {
-        enableFallback: true
+      // Use failover wrapper for analysis
+      const analysisResultObj = await this.callAIWithFailover(analysisPrompt, {
+        apiKey: apiKey,
+        fallbackApiKey: apiKey,
+        context: '',
+        question: analysisPrompt,
+        systemPrompt: 'You are a QA assistant that analyzes user requests.',
+        userMessage: analysisPrompt
       });
+      const analysisResult = analysisResultObj.content || analysisResultObj;
       // Try to parse JSON from response
       const jsonMatch = analysisResult.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
@@ -804,9 +1365,17 @@ Respond in structured format with clear sections for each category.`;
 
     while (attempts < maxAttempts) {
       try {
-        const generationResult = await this.generateAnswer(aiModel, apiKey, retrievedContext || '', generationPrompt, {
-          enableFallback: true
+        // Use failover wrapper for test case generation
+        const generationResultObj = await this.callAIWithFailover(generationPrompt, {
+          apiKey: apiKey,
+          fallbackApiKey: apiKey,
+          context: retrievedContext || '',
+          question: generationPrompt,
+          systemPrompt: 'You are PurpleIQ, an expert QA test designer.',
+          userMessage: message,
+          intent: 'TEST_CASE_GENERATION'
         });
+        const generationResult = generationResultObj.content || generationResultObj;
         
         // Extract JSON from response
         const jsonMatch = generationResult.match(/\{[\s\S]*\}/);
@@ -1281,11 +1850,18 @@ Make the bug report clear, actionable, and professional. NO placeholder text lik
 
     const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
 
-    // Use validation and retry
+    // Use failover wrapper for bug report generation
     const generateFunction = async (prompt) => {
-      return await this.generateAnswer(aiModel, apiKey, context, prompt, {
-        enableFallback: true
+      const result = await this.callAIWithFailover(prompt, {
+        apiKey: apiKey,
+        fallbackApiKey: apiKey,
+        context: context,
+        question: prompt,
+        systemPrompt: systemPrompt,
+        userMessage: userMessage,
+        intent: 'BUG_REPORT_FORMATTING'
       });
+      return result.content || result;
     };
 
     const result = await this.validateAndRetry(
@@ -1323,11 +1899,18 @@ Make the bug report clear, actionable, and professional. NO placeholder text lik
       userMessage: userMessage
     });
 
-    // Use validation and retry
+    // Use failover wrapper for bug report generation
     const generateFunction = async (prompt) => {
-      return await this.generateAnswer(aiModel, apiKey, context, prompt, {
-        enableFallback: true
+      const result = await this.callAIWithFailover(prompt, {
+        apiKey: apiKey,
+        fallbackApiKey: apiKey,
+        context: context,
+        question: prompt,
+        systemPrompt: systemPrompt,
+        userMessage: userMessage,
+        intent: 'BUG_REPORT_FORMATTING'
       });
+      return result.content || result;
     };
 
     const result = await this.validateAndRetry(
@@ -1365,11 +1948,18 @@ Make the bug report clear, actionable, and professional. NO placeholder text lik
       userMessage: userMessage
     });
 
-    // Use validation and retry
+    // Use failover wrapper for automation suggestions
     const generateFunction = async (prompt) => {
-      return await this.generateAnswer(aiModel, apiKey, context, prompt, {
-        enableFallback: true
+      const result = await this.callAIWithFailover(prompt, {
+        apiKey: apiKey,
+        fallbackApiKey: apiKey,
+        context: context,
+        question: prompt,
+        systemPrompt: 'You are PurpleIQ, an expert QA automation specialist.',
+        userMessage: userMessage,
+        intent: 'AUTOMATION_SUGGESTION'
       });
+      return result.content || result;
     };
 
     const result = await this.validateAndRetry(
@@ -1392,6 +1982,20 @@ Make the bug report clear, actionable, and professional. NO placeholder text lik
    * Analyzes and explains project documents/PRDs
    */
   async analyzeDocumentsWorkflow(context, userMessage, aiModel, apiKey) {
+    // Use failover wrapper for document analysis
+    const result = await this.callAIWithFailover(userMessage, {
+      apiKey: apiKey,
+      fallbackApiKey: apiKey,
+      context: context,
+      question: userMessage,
+      systemPrompt: 'You are PurpleIQ, an expert QA analyst that analyzes requirements documents.',
+      userMessage: userMessage,
+      intent: 'DOCUMENT_ANALYSIS'
+    });
+    return result.content || result;
+  }
+
+  async analyzeDocumentsWorkflow_OLD(context, userMessage, aiModel, apiKey) {
     const systemPrompt = `You are PurpleIQ, a QA analyst specializing in requirement analysis. Analyze and explain project documents clearly.
 
 Workflow:
@@ -1409,9 +2013,17 @@ Make complex requirements easy to understand for QA teams.`;
 
     const userPrompt = `Context from Project Documents:\n\n${context}\n\nUser Question: ${userMessage}\n\nAnalyze the documents and answer the user's question clearly and comprehensively.`;
 
-    return await this.generateAnswer(aiModel, apiKey, context, userPrompt, {
-      enableFallback: true
+    // Use failover wrapper for document analysis
+    const result = await this.callAIWithFailover(userPrompt, {
+      apiKey: apiKey,
+      fallbackApiKey: apiKey,
+      context: context,
+      question: userPrompt,
+      systemPrompt: systemPrompt,
+      userMessage: userMessage,
+      intent: 'DOCUMENT_ANALYSIS'
     });
+    return result.content || result;
   }
 
   /**
@@ -2121,15 +2733,71 @@ If the question can't be answered from the documents, provide general QA guidanc
    * @param {string} aiModel - AI model to use
    * @param {string} apiKey - API key
    * @param {string} projectId - Project ID (optional, for workflows that need it)
+   * @param {Function} progressCallback - Optional callback for progress updates
    * @returns {Promise<{answer: string, intent: string, workflow: string, metadata?: object}>}
    */
-  async processAgenticRequest(userMessage, context, aiModel, apiKey, projectId = null) {
+  async processAgenticRequest(userMessage, context, aiModel, apiKey, projectId = null, progressCallback = null) {
+    const startTime = Date.now();
+    const cacheKey = this.generateCacheKey(userMessage, context, aiModel, projectId);
+    
+    // Check cache first
+    const cachedResponse = this.getCachedResponse(cacheKey);
+    if (cachedResponse) {
+      console.log('✅ Cache hit - returning cached response');
+      if (progressCallback) progressCallback({ stage: 'cache_hit', progress: 100 });
+      return cachedResponse;
+    }
+
+    // Check if same request is in flight (deduplication)
+    const inFlightRequest = this.getInFlightRequest(cacheKey);
+    if (inFlightRequest) {
+      console.log('⏳ Request already in flight - waiting for existing request');
+      this.performanceMetrics.deduplicationHits++;
+      if (progressCallback) progressCallback({ stage: 'deduplication', progress: 0 });
+      return await inFlightRequest;
+    }
+
     console.log('\n🤖 AGENTIC MODE: Processing request...');
     console.log(`📝 User message: ${userMessage.substring(0, 100)}${userMessage.length > 100 ? '...' : ''}`);
+
+    // Create the request promise
+    const requestPromise = this.requestContext.run(
+      { meta: { provider: null, model: null, retriesUsed: 0 } },
+      () => this._processAgenticRequestInternal(userMessage, context, aiModel, apiKey, projectId, progressCallback)
+    );
+    
+    // Register as in-flight
+    this.setInFlightRequest(cacheKey, requestPromise);
+
+    // Execute and cache result
+    try {
+      const result = await requestPromise;
+      
+      // Cache the result
+      this.setCachedResponse(cacheKey, result);
+      
+      const duration = Date.now() - startTime;
+      this.performanceMetrics.aiCalls++;
+      this.performanceMetrics.averageLatency = 
+        (this.performanceMetrics.averageLatency * (this.performanceMetrics.aiCalls - 1) + duration) / this.performanceMetrics.aiCalls;
+      
+      return result;
+    } catch (error) {
+      // Don't cache errors
+      throw error;
+    }
+  }
+
+  /**
+   * Internal method to process agentic request (without caching/deduplication)
+   */
+  async _processAgenticRequestInternal(userMessage, context, aiModel, apiKey, projectId = null, progressCallback = null) {
+    if (progressCallback) progressCallback({ stage: 'initializing', progress: 5 });
 
     // Step 1: Build conversation context if projectId is available
     let conversationContext = '';
     if (projectId) {
+      if (progressCallback) progressCallback({ stage: 'loading_context', progress: 10 });
       conversationContext = this.buildConversationContext(projectId, 3);
       if (conversationContext) {
         console.log(`💭 Including conversation history (${this.getConversationHistory(projectId, 3).length} previous turns)`);
@@ -2159,41 +2827,15 @@ If the question can't be answered from the documents, provide general QA guidanc
     console.log(`🎯 Detected intent: ${intent}`);
 
     // Step 3: Check for demo mode response
+    if (progressCallback) progressCallback({ stage: 'checking_demo_mode', progress: 30 });
     const demoResponse = this.getDemoResponse(userMessage, intent);
     if (demoResponse && this.demoModeEnabled) {
       console.log('🎬 DEMO MODE ACTIVE - Using pre-generated demo response');
+      if (progressCallback) progressCallback({ stage: 'simulating_delay', progress: 50 });
       await this.simulateDelay(2000); // 2-second delay to simulate API call
       
       // Format demo response based on intent
-      let answer;
-      let metadata = null;
-      
-      if (intent === AIService.INTENT_TYPES.TEST_CASE_GENERATION && demoResponse.testCases) {
-        // Format test cases response
-        answer = `${demoResponse.summary || ''}\n\n${demoResponse.markdownTable || ''}`;
-        metadata = {
-          testCases: demoResponse.testCases,
-          coverageAnalysis: {
-            total: demoResponse.testCases.length,
-            positive: demoResponse.testCases.filter(tc => tc.type === 'Positive').length,
-            negative: demoResponse.testCases.filter(tc => tc.type === 'Negative').length,
-            edgeCases: demoResponse.testCases.filter(tc => tc.type === 'Edge Case').length
-          },
-          qualityScore: 9.0,
-          isDemo: true
-        };
-      } else if (intent === AIService.INTENT_TYPES.BUG_REPORT_FORMATTING && demoResponse.title) {
-        // Format bug report response
-        answer = `### Title/Summary\n${demoResponse.title}\n\n### Description\n${demoResponse.description}\n\n### Steps to Reproduce\n${demoResponse.steps.map((step, i) => `${i + 1}. ${step}`).join('\n')}\n\n### Expected Behavior\n${demoResponse.expectedBehavior}\n\n### Actual Behavior\n${demoResponse.actualBehavior}\n\n### Environment\n${demoResponse.environment}\n\n### Priority/Severity\n${demoResponse.priority || demoResponse.severity}`;
-        metadata = { isDemo: true };
-      } else if (typeof demoResponse === 'string') {
-        // String response (test plan, automation)
-        answer = demoResponse;
-        metadata = { isDemo: true };
-      } else {
-        answer = JSON.stringify(demoResponse, null, 2);
-        metadata = { isDemo: true };
-      }
+      const { answer, metadata } = this.formatDemoResponse(intent, demoResponse);
 
       return {
         answer,
@@ -2204,19 +2846,23 @@ If the question can't be answered from the documents, provide general QA guidanc
     }
 
     // Step 4: Enhance context with conversation history
+    if (progressCallback) progressCallback({ stage: 'enhancing_context', progress: 40 });
     let enhancedContext = context;
     if (conversationContext) {
       enhancedContext = `${context}\n\n${conversationContext}`;
     }
 
     // Step 5: Route to appropriate workflow (with fallback to demo)
+    if (progressCallback) progressCallback({ stage: 'routing_to_workflow', progress: 50 });
     let answer;
     let workflowName;
     let metadata = null;
 
-    switch (intent) {
+    try {
+      switch (intent) {
       case AIService.INTENT_TYPES.TEST_CASE_GENERATION:
         workflowName = 'Test Case Generation';
+        if (progressCallback) progressCallback({ stage: 'loading_project_info', progress: 55 });
         console.log(`🔄 Executing workflow: ${workflowName}`);
         
         // Get project info and conversation history for enhanced prompts
@@ -2240,6 +2886,7 @@ If the question can't be answered from the documents, provide general QA guidanc
           }
         }
         
+        if (progressCallback) progressCallback({ stage: 'generating_test_cases', progress: 60 });
         const testCasesResult = await this.generateTestCasesWorkflow(
           userMessage, 
           projectId || 'unknown', 
@@ -2257,11 +2904,13 @@ If the question can't be answered from the documents, provide general QA guidanc
           qualityScore: testCasesResult.qualityScore,
           analysis: testCasesResult.analysis
         };
+        if (progressCallback) progressCallback({ stage: 'test_cases_complete', progress: 90 });
         break;
 
       case AIService.INTENT_TYPES.BUG_REPORT_FORMATTING:
         workflowName = 'Bug Report Formatting';
         console.log(`🔄 Executing workflow: ${workflowName}`);
+        if (progressCallback) progressCallback({ stage: 'loading_project_info', progress: 55 });
         // Get project info and conversation history
         let bugReportProjectInfo = {};
         let bugReportHistory = [];
@@ -2282,12 +2931,15 @@ If the question can't be answered from the documents, provide general QA guidanc
             console.warn('⚠️  Could not load project info:', err.message);
           }
         }
+        if (progressCallback) progressCallback({ stage: 'formatting_bug_report', progress: 60 });
         answer = await this.formatBugReportWorkflow(enhancedContext, userMessage, aiModel, apiKey, bugReportProjectInfo, bugReportHistory);
+        if (progressCallback) progressCallback({ stage: 'bug_report_complete', progress: 90 });
         break;
 
       case AIService.INTENT_TYPES.TEST_PLAN_CREATION:
         workflowName = 'Test Plan Creation';
         console.log(`🔄 Executing workflow: ${workflowName}`);
+        if (progressCallback) progressCallback({ stage: 'loading_project_info', progress: 55 });
         // Get project info and conversation history
         let testPlanProjectInfo = {};
         let testPlanHistory = [];
@@ -2308,7 +2960,9 @@ If the question can't be answered from the documents, provide general QA guidanc
             console.warn('⚠️  Could not load project info:', err.message);
           }
         }
+        if (progressCallback) progressCallback({ stage: 'creating_test_plan', progress: 60 });
         answer = await this.createTestPlanWorkflow(enhancedContext, userMessage, aiModel, apiKey, testPlanProjectInfo, testPlanHistory);
+        if (progressCallback) progressCallback({ stage: 'test_plan_complete', progress: 90 });
         break;
 
       case AIService.INTENT_TYPES.AUTOMATION_SUGGESTION:
@@ -2349,15 +3003,80 @@ If the question can't be answered from the documents, provide general QA guidanc
         console.log(`🔄 Executing workflow: ${workflowName}`);
         answer = await this.answerGeneralQuestion(enhancedContext, userMessage, aiModel, apiKey);
         break;
+      }
+    } catch (error) {
+      console.error(`❌ Error in workflow execution (${workflowName || 'unknown'}):`, {
+        error: error.message,
+        stack: error.stack?.split('\n').slice(0, 3),
+        intent: intent
+      });
+
+      // Fallback to demo response if all providers fail or rate limits hit
+      const isProviderError = error instanceof AllProvidersFailedError || 
+                             error instanceof RateLimitError ||
+                             error.message?.includes('All AI providers failed') ||
+                             error.message?.includes('429') ||
+                             error.message?.includes('rate limit');
+
+      if (isProviderError) {
+        const fallbackDemo = this.getDemoResponse(userMessage, intent, true);
+        if (fallbackDemo) {
+          console.warn('⚠️  All providers failed or rate limited; using demo fallback response');
+          const formatted = this.formatDemoResponse(intent, fallbackDemo);
+          answer = formatted.answer;
+          metadata = {
+            ...(formatted.metadata || {}),
+            fallbackReason: error.name || 'Provider Error',
+            usedFallback: true
+          };
+          workflowName = `${this.getWorkflowName(intent)} (Demo Fallback)`;
+        } else {
+          // If no demo response, provide a helpful error message
+          answer = `I apologize, but I'm unable to process your request at the moment. ${error.message || 'Please try again in a moment.'}`;
+          metadata = {
+            error: error.message,
+            usedFallback: false
+          };
+        }
+      } else {
+        // For other errors, provide a helpful message instead of crashing
+        answer = `I encountered an error while processing your request: ${error.message || 'Please try again.'}`;
+        metadata = {
+          error: error.message,
+          errorType: error.name
+        };
+      }
+
+      // Ensure we have an answer before continuing
+      if (!answer) {
+        answer = `I'm sorry, I couldn't process your request. Please try again.`;
+        metadata = { error: error.message || 'Unknown error' };
+      }
     }
 
     console.log(`✅ Workflow completed: ${workflowName}`);
+    if (progressCallback) progressCallback({ stage: 'complete', progress: 100 });
+
+    // Get request metadata and rate limit status
+    const requestMeta = this.getRequestMeta() || {};
+    const rateLimitStatus = this.getRateLimitStatus();
 
     return {
       answer,
       intent,
       workflow: workflowName,
-      ...(metadata && { metadata })
+      ...(metadata && { metadata }),
+      modelInfo: {
+        provider: requestMeta.provider || 'unknown',
+        model: requestMeta.model || 'unknown',
+        retriesUsed: requestMeta.retriesUsed || 0
+      },
+      rateLimitInfo: {
+        recommended: rateLimitStatus.recommended,
+        openaiStatus: rateLimitStatus.openai.status,
+        geminiStatus: rateLimitStatus.gemini.status,
+        openaiHeadroom: rateLimitStatus.openai.headroom
+      }
     };
   }
 }

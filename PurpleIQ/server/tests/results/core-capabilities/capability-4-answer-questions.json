@@ -1,0 +1,10 @@
+{
+  "question": "What are the acceptance criteria for login?",
+  "duration": 8930,
+  "response": {
+    "error": "AllProvidersFailedError",
+    "message": "All AI services are currently unavailable. Please try again later or contact support.",
+    "statusCode": 503,
+    "timestamp": "2026-02-01T12:03:01.625Z"
+  }
+}

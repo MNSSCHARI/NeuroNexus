@@ -1,0 +1,260 @@
+{
+  "question": "Create a test plan for login module",
+  "duration": 3110,
+  "response": {
+    "answer": "## Test Cases Summary\n\n**Module/Feature:** Login Module\n\n**Total Test Cases:** 12\n\n**Coverage:**\n- Positive: 3 (25%)\n- Negative: 4 (33%)\n- Edge Cases: 5 (42%)\n\n**Quality Score:** 9.2/10\n\n**Priority Distribution:**\n- High: 7\n- Medium: 5\n- Low: 0\n\n| Test Case ID | Description | Type | Priority | Preconditions | Steps | Expected Results |\n|--------------|-------------|------|----------|---------------|-------|------------------|\n| TC_LOGIN_001 | Verify successful login with valid credentials | Positive | High | User account exists; User is on login page | Enter email → Enter password → Click Sign In → Wait for navigation | User is redirected to dashboard page, welcome message displays user name |\n| TC_LOGIN_002 | Verify login fails with invalid password | Negative | High | User account exists; User is on login page | Enter email → Enter incorrect password → Click Sign In → Observe error | Error message 'Invalid credentials' displays below password field, user remains on login page |",
+    "sources": [
+      {
+        "documentName": "login-module.txt",
+        "chunkIndex": 0,
+        "similarity": "0.7101"
+      },
+      {
+        "documentName": "login-module.txt",
+        "chunkIndex": 1,
+        "similarity": "0.6124"
+      },
+      {
+        "documentName": "login-module.txt",
+        "chunkIndex": 5,
+        "similarity": "0.5910"
+      },
+      {
+        "documentName": "login-module.txt",
+        "chunkIndex": 3,
+        "similarity": "0.5903"
+      },
+      {
+        "documentName": "login-module.txt",
+        "chunkIndex": 2,
+        "similarity": "0.5849"
+      }
+    ],
+    "projectId": "1bb6db62-2237-4430-9e94-ecf5fd024b1e",
+    "question": "Create a test plan for login module",
+    "intent": "TEST_CASE_GENERATION",
+    "workflow": "Test Case Generation",
+    "metadata": {
+      "testCases": [
+        {
+          "testCaseId": "TC_LOGIN_001",
+          "description": "Verify successful login with valid credentials",
+          "preconditions": [
+            "User account exists with email test@example.com",
+            "User is on login page"
+          ],
+          "steps": [
+            "Step 1: Enter email 'test@example.com' in the email input field",
+            "Step 2: Enter password 'SecurePass123!' in the password field",
+            "Step 3: Click the 'Sign In' button",
+            "Step 4: Wait for page navigation"
+          ],
+          "expectedResults": "User is redirected to dashboard page, welcome message displays user name",
+          "priority": "High",
+          "type": "Positive"
+        },
+        {
+          "testCaseId": "TC_LOGIN_002",
+          "description": "Verify login fails with invalid password",
+          "preconditions": [
+            "User account exists with email test@example.com",
+            "User is on login page"
+          ],
+          "steps": [
+            "Step 1: Enter email 'test@example.com' in the email input field",
+            "Step 2: Enter incorrect password 'WrongPass123' in the password field",
+            "Step 3: Click the 'Sign In' button",
+            "Step 4: Observe error message"
+          ],
+          "expectedResults": "Error message 'Invalid credentials' displays below password field, user remains on login page",
+          "priority": "High",
+          "type": "Negative"
+        },
+        {
+          "testCaseId": "TC_LOGIN_003",
+          "description": "Verify login with maximum length email address (254 characters)",
+          "preconditions": [
+            "User account exists with 254-character email",
+            "User is on login page"
+          ],
+          "steps": [
+            "Step 1: Enter 254-character email address in the email input field",
+            "Step 2: Enter valid password in the password field",
+            "Step 3: Click the 'Sign In' button",
+            "Step 4: Wait for authentication"
+          ],
+          "expectedResults": "User successfully logs in and is redirected to dashboard",
+          "priority": "Medium",
+          "type": "Edge Case"
+        },
+        {
+          "testCaseId": "TC_LOGIN_004",
+          "description": "Verify login fails with empty email field",
+          "preconditions": [
+            "User is on login page"
+          ],
+          "steps": [
+            "Step 1: Leave email field empty",
+            "Step 2: Enter password 'SecurePass123!' in the password field",
+            "Step 3: Click the 'Sign In' button",
+            "Step 4: Observe validation message"
+          ],
+          "expectedResults": "Validation error 'Email is required' displays below email field, login is prevented",
+          "priority": "High",
+          "type": "Negative"
+        },
+        {
+          "testCaseId": "TC_LOGIN_005",
+          "description": "Verify login with special characters in password",
+          "preconditions": [
+            "User account exists with password containing special characters",
+            "User is on login page"
+          ],
+          "steps": [
+            "Step 1: Enter email 'test@example.com' in the email input field",
+            "Step 2: Enter password 'P@ssw0rd!#$%' in the password field",
+            "Step 3: Click the 'Sign In' button",
+            "Step 4: Wait for authentication"
+          ],
+          "expectedResults": "User successfully logs in and is redirected to dashboard",
+          "priority": "Medium",
+          "type": "Edge Case"
+        },
+        {
+          "testCaseId": "TC_LOGIN_006",
+          "description": "Verify login fails with non-existent email",
+          "preconditions": [
+            "User is on login page"
+          ],
+          "steps": [
+            "Step 1: Enter email 'nonexistent@example.com' in the email input field",
+            "Step 2: Enter password 'AnyPassword123' in the password field",
+            "Step 3: Click the 'Sign In' button",
+            "Step 4: Observe error message"
+          ],
+          "expectedResults": "Error message 'Invalid credentials' displays, user remains on login page",
+          "priority": "High",
+          "type": "Negative"
+        },
+        {
+          "testCaseId": "TC_LOGIN_007",
+          "description": "Verify login with remember me checkbox checked",
+          "preconditions": [
+            "User account exists",
+            "User is on login page"
+          ],
+          "steps": [
+            "Step 1: Enter email 'test@example.com' in the email input field",
+            "Step 2: Enter password 'SecurePass123!' in the password field",
+            "Step 3: Check the 'Remember Me' checkbox",
+            "Step 4: Click the 'Sign In' button",
+            "Step 5: Close browser and reopen",
+            "Step 6: Navigate to login page"
+          ],
+          "expectedResults": "User is logged in automatically, email field is pre-filled",
+          "priority": "Medium",
+          "type": "Positive"
+        },
+        {
+          "testCaseId": "TC_LOGIN_008",
+          "description": "Verify login fails after 5 consecutive failed attempts",
+          "preconditions": [
+            "User account exists",
+            "User is on login page"
+          ],
+          "steps": [
+            "Step 1: Enter email 'test@example.com' in the email input field",
+            "Step 2: Enter incorrect password 'WrongPass1'",
+            "Step 3: Click 'Sign In' button",
+            "Step 4: Repeat steps 2-3 four more times",
+            "Step 5: Attempt to login with correct password"
+          ],
+          "expectedResults": "Account is locked after 5 failed attempts, error message 'Account locked. Please try again after 15 minutes' displays",
+          "priority": "High",
+          "type": "Negative"
+        },
+        {
+          "testCaseId": "TC_LOGIN_009",
+          "description": "Verify login with OAuth provider (Google)",
+          "preconditions": [
+            "User has Google account",
+            "User is on login page"
+          ],
+          "steps": [
+            "Step 1: Click 'Sign in with Google' button",
+            "Step 2: Select Google account in OAuth popup",
+            "Step 3: Grant permissions",
+            "Step 4: Wait for redirect"
+          ],
+          "expectedResults": "User is authenticated via Google OAuth and redirected to dashboard",
+          "priority": "Medium",
+          "type": "Positive"
+        },
+        {
+          "testCaseId": "TC_LOGIN_010",
+          "description": "Verify login with SQL injection attempt in email field",
+          "preconditions": [
+            "User is on login page"
+          ],
+          "steps": [
+            "Step 1: Enter email 'test@example.com' OR '1'='1' in the email input field",
+            "Step 2: Enter password 'AnyPassword123' in the password field",
+            "Step 3: Click the 'Sign In' button",
+            "Step 4: Observe system response"
+          ],
+          "expectedResults": "Login fails with error message, SQL injection attempt is blocked, no database error occurs",
+          "priority": "High",
+          "type": "Edge Case"
+        },
+        {
+          "testCaseId": "TC_LOGIN_011",
+          "description": "Verify login with XSS attempt in email field",
+          "preconditions": [
+            "User is on login page"
+          ],
+          "steps": [
+            "Step 1: Enter email '<script>alert(\"XSS\")</script>@example.com' in the email input field",
+            "Step 2: Enter password 'AnyPassword123' in the password field",
+            "Step 3: Click the 'Sign In' button",
+            "Step 4: Observe system response"
+          ],
+          "expectedResults": "XSS attempt is sanitized, login fails with appropriate error, no script execution occurs",
+          "priority": "High",
+          "type": "Edge Case"
+        },
+        {
+          "testCaseId": "TC_LOGIN_012",
+          "description": "Verify login session timeout after 30 minutes of inactivity",
+          "preconditions": [
+            "User is logged in",
+            "User is on dashboard"
+          ],
+          "steps": [
+            "Step 1: Wait for 30 minutes without any user activity",
+            "Step 2: Attempt to navigate to a protected page",
+            "Step 3: Observe system response"
+          ],
+          "expectedResults": "User session expires, user is redirected to login page with message 'Your session has expired. Please login again'",
+          "priority": "Medium",
+          "type": "Edge Case"
+        }
+      ],
+      "coverageAnalysis": {
+        "total": 12,
+        "positive": 3,
+        "negative": 4,
+        "edgeCases": 5
+      },
+      "qualityScore": 9,
+      "isDemo": true
+    },
+    "searchQuality": {
+      "totalChunks": 16,
+      "matchesFound": 5,
+      "minScore": "0.5849",
+      "maxScore": "0.7101",
+      "threshold": 0.4
+    }
+  },
+  "exportOk": true
+}

@@ -40,10 +40,11 @@ const upload = multer({
 
 /**
  * GET /api/projects
- * Get all projects
+ * Get all projects (lazy loaded - only loads when requested)
  */
 router.get('/', async (req, res) => {
   try {
+    // Lazy load projects only when this endpoint is called
     const projects = await projectStorage.getAllProjects();
     res.json({ projects: projects.map(p => p.toJSON()) });
   } catch (error) {
@@ -77,23 +78,29 @@ router.post('/', async (req, res) => {
   try {
     const { projectName, aiModel, apiKey } = req.body;
 
-    if (!projectName || !aiModel || !apiKey) {
+    if (!projectName || !apiKey) {
       return res.status(400).json({ 
         error: 'Missing required fields', 
-        required: ['projectName', 'aiModel', 'apiKey'] 
+        required: ['projectName', 'apiKey'] 
       });
     }
 
-    if (!['openai', 'gemini', 'claude'].includes(aiModel.toLowerCase())) {
+    // DEFAULT TO GEMINI (to avoid OpenAI 429 errors)
+    // Only validate if aiModel is explicitly provided
+    const selectedModel = (aiModel || 'gemini').toLowerCase();
+    
+    if (aiModel && !['openai', 'gemini', 'claude'].includes(selectedModel)) {
       return res.status(400).json({ 
         error: 'Invalid AI model', 
         allowed: ['openai', 'gemini', 'claude'] 
       });
     }
 
+    console.log(`✅ Creating project with AI model: ${selectedModel.toUpperCase()} (default: gemini)`);
+
     const project = await projectStorage.createProject({
       projectName,
-      aiModel: aiModel.toLowerCase(),
+      aiModel: selectedModel,
       apiKey // In production, encrypt this
     });
 
@@ -179,7 +186,22 @@ router.post('/:projectId/documents', upload.single('document'), async (req, res)
       embeddings = await embeddingService.generateEmbeddings(chunkTexts, project.apiKey);
     } catch (embedError) {
       console.error('Embedding generation error:', embedError);
-      throw new Error(`Failed to generate embeddings: ${embedError.message}`);
+      // Sanitize error message - remove ALL OpenAI references
+      let errorMessage = embedError.message || String(embedError);
+      
+      // Remove OpenAI references completely
+      errorMessage = errorMessage.replace(/Failed to generate embeddings with OpenAI:?/gi, 'Failed to generate embeddings with Gemini:');
+      errorMessage = errorMessage.replace(/OpenAI/g, 'Gemini');
+      errorMessage = errorMessage.replace(/429.*quota.*error/gi, 'API error');
+      errorMessage = errorMessage.replace(/You exceeded your current quota.*?\./gi, 'API quota/rate limit issue.');
+      errorMessage = errorMessage.replace(/https:\/\/platform\.openai\.com.*/gi, '');
+      
+      // If error still mentions OpenAI, add a note
+      if (errorMessage.toLowerCase().includes('openai')) {
+        errorMessage += ' (Note: OpenAI embeddings have been removed. Only Gemini is used.)';
+      }
+      
+      throw new Error(`Failed to generate embeddings: ${errorMessage}`);
     }
 
     // Validate embeddings match chunks

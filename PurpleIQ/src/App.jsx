@@ -4,6 +4,7 @@ import SplashScreen from './SplashScreen'
 import MainApp from './MainApp'
 import AdminPortal from './pages/AdminPortal'
 import ProjectChat from './pages/ProjectChat'
+import HealthDashboard from './pages/HealthDashboard'
 import './App.css'
 
 /**
@@ -40,6 +41,7 @@ function App() {
     <Routes>
       <Route path="/" element={<MainApp />} />
       <Route path="/admin" element={<AdminPortal />} />
+      <Route path="/health" element={<HealthDashboard />} />
       <Route path="/project/:projectId" element={<ProjectChat />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

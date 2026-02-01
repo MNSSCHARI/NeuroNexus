@@ -1,0 +1,44 @@
+{
+  "timestamp": "2026-02-01T12:10:38.449Z",
+  "projectId": "0d3b55fa-c334-43ce-a4d9-8ee626de4615",
+  "total": 7,
+  "passed": 0,
+  "failed": 7,
+  "results": [
+    {
+      "capability": "Generate Test Cases",
+      "passed": false,
+      "reason": "Upload failed (login-module.txt): 500 {\"error\":\"Failed to process document\",\"message\":\"Failed to generate embeddings: Failed to generate embeddings with OpenAI: 429 You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.\"}"
+    },
+    {
+      "capability": "Create Bug Reports",
+      "passed": false,
+      "reason": "Upload failed (login-module.txt): 500 {\"error\":\"Failed to process document\",\"message\":\"Failed to generate embeddings: Failed to generate embeddings with OpenAI: 429 You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.\"}"
+    },
+    {
+      "capability": "Develop Test Plans",
+      "passed": false,
+      "reason": "Upload failed (login-module.txt): 500 {\"error\":\"Failed to process document\",\"message\":\"Failed to generate embeddings: Failed to generate embeddings with OpenAI: 429 You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.\"}"
+    },
+    {
+      "capability": "Answer Questions",
+      "passed": false,
+      "reason": "Upload failed (login-module.txt): 500 {\"error\":\"Failed to process document\",\"message\":\"Failed to generate embeddings: Failed to generate embeddings with OpenAI: 429 You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.\"}"
+    },
+    {
+      "capability": "Analyze Requirements",
+      "passed": false,
+      "reason": "Upload failed (login-module.txt): 500 {\"error\":\"Failed to process document\",\"message\":\"Failed to generate embeddings: Failed to generate embeddings with OpenAI: 429 You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.\"}"
+    },
+    {
+      "capability": "Multi-Document Analysis",
+      "passed": false,
+      "reason": "Upload failed (login-module.txt): 500 {\"error\":\"Failed to process document\",\"message\":\"Failed to generate embeddings: Failed to generate embeddings with OpenAI: 429 You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.\"}"
+    },
+    {
+      "capability": "Quality Improvement",
+      "passed": false,
+      "reason": "Upload failed (login-module.txt): 500 {\"error\":\"Failed to process document\",\"message\":\"Failed to generate embeddings: Failed to generate embeddings with OpenAI: 429 You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.\"}"
+    }
+  ]
+}

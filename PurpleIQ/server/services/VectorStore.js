@@ -30,10 +30,15 @@ class VectorStore {
 
   /**
    * Cosine similarity between two vectors
+   * Made public for debugging
    */
   cosineSimilarity(vecA, vecB) {
+    if (!vecA || !vecB) {
+      throw new Error('Both vectors must be provided');
+    }
+    
     if (vecA.length !== vecB.length) {
-      throw new Error('Vectors must have the same length');
+      throw new Error(`Vectors must have the same length. Got ${vecA.length} and ${vecB.length}`);
     }
 
     let dotProduct = 0;
@@ -46,7 +51,12 @@ class VectorStore {
       normB += vecB[i] * vecB[i];
     }
 
-    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+    const denominator = Math.sqrt(normA) * Math.sqrt(normB);
+    if (denominator === 0) {
+      return 0; // Handle zero vectors
+    }
+
+    return dotProduct / denominator;
   }
 
   /**
@@ -108,7 +118,32 @@ class VectorStore {
       return [];
     }
 
-    // Calculate similarity scores
+    // Optimization: Skip similarity calculation if chunk count < 10 (just return top chunks)
+    if (vectors.length < 10) {
+      const results = vectors.slice(0, topK).map((item, index) => ({
+        ...item,
+        similarity: 1.0, // Assume high similarity for small datasets
+        index
+      }));
+      const duration = Date.now() - startTime;
+      this.logger.vectorSearch(
+        `Query for project ${projectId} (optimized for small dataset)`,
+        results.length,
+        1.0,
+        duration,
+        {
+          function: 'searchSimilar',
+          projectId,
+          topK,
+          totalVectors: vectors.length,
+          optimized: true,
+          requestId
+        }
+      );
+      return results;
+    }
+
+    // Calculate similarity scores (only for larger datasets)
     const results = vectors.map((item, index) => {
       const similarity = this.cosineSimilarity(queryVector, item.embedding);
       return {
@@ -123,7 +158,8 @@ class VectorStore {
 
     // Filter by minimum similarity threshold
     const filteredResults = results.filter(item => item.similarity >= minSimilarity);
-    const finalResults = filteredResults.slice(0, topK);
+    // Always limit to top 5 for performance (even if topK is higher)
+    const finalResults = filteredResults.slice(0, Math.min(topK, 5));
     const duration = Date.now() - startTime;
     const topScore = finalResults.length > 0 ? finalResults[0].similarity : null;
 

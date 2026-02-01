@@ -1,0 +1,355 @@
+# Product Requirements Document: User Registration Module
+
+## 1. Overview
+
+The User Registration Module enables new users to create accounts in the application. This module provides a secure, user-friendly registration process with email verification, password strength validation, and comprehensive data validation to ensure data quality and security.
+
+## 2. Business Objectives
+
+- Enable new user account creation with minimal friction
+- Ensure data quality through comprehensive validation
+- Implement security best practices for account creation
+- Support user onboarding with clear guidance
+- Collect necessary user information for personalized experience
+- Maintain compliance with data protection regulations (GDPR, CCPA)
+
+## 3. Functional Requirements
+
+### 3.1 Registration Form
+
+**FR-001:** Registration form must include:
+- First Name field (required, max 50 characters)
+- Last Name field (required, max 50 characters)
+- Email Address field (required, max 254 characters, unique)
+- Password field (required, min 8 characters, masked)
+- Confirm Password field (required, must match password)
+- Phone Number field (optional, format: +1-XXX-XXX-XXXX)
+- Date of Birth field (optional, format: MM/DD/YYYY, must be 18+)
+- "I agree to Terms and Conditions" checkbox (required)
+- "I agree to receive marketing emails" checkbox (optional)
+- "Create Account" button
+- "Sign in instead" link (for existing users)
+
+**FR-002:** First Name validation:
+- Required field
+- Minimum length: 1 character
+- Maximum length: 50 characters
+- Must accept alphabetic characters, spaces, hyphens, apostrophes
+- Must accept international characters (Unicode)
+- Must display error: "First name is required" if empty
+- Must display error: "First name must be 50 characters or less" if too long
+- Must sanitize input to prevent XSS attacks
+
+**FR-003:** Last Name validation:
+- Required field
+- Same validation rules as First Name
+- Must display same error messages as First Name
+
+**FR-004:** Email Address validation:
+- Required field
+- Must validate email format (RFC 5322 compliant)
+- Maximum length: 254 characters
+- Must check for duplicate emails in database
+- Must display error: "Email is required" if empty
+- Must display error: "Please enter a valid email address" for invalid format
+- Must display error: "This email is already registered. Please sign in instead." for duplicates
+- Must convert to lowercase before storage
+
+**FR-005:** Password validation:
+- Required field
+- Minimum length: 8 characters
+- Must contain at least one uppercase letter (A-Z)
+- Must contain at least one lowercase letter (a-z)
+- Must contain at least one number (0-9)
+- Must contain at least one special character (!@#$%^&*()_+-=[]{}|;:,.<>?)
+- Must display real-time strength indicator (Weak/Medium/Strong)
+- Must display error: "Password is required" if empty
+- Must display error: "Password must be at least 8 characters with uppercase, lowercase, number, and special character" for weak passwords
+- Must mask password input (display as dots)
+
+**FR-006:** Confirm Password validation:
+- Required field
+- Must exactly match Password field
+- Must display error: "Passwords do not match" if mismatch
+- Must validate in real-time as user types
+- Must mask password input (display as dots)
+
+**FR-007:** Phone Number validation (optional):
+- Optional field
+- Must accept format: +1-XXX-XXX-XXXX or (XXX) XXX-XXXX
+- Must validate phone number format
+- Must display error: "Please enter a valid phone number" for invalid format
+- Must store in E.164 format: +1XXXXXXXXXX
+
+**FR-008:** Date of Birth validation (optional):
+- Optional field
+- Must be 18 years or older
+- Must accept format: MM/DD/YYYY
+- Must validate date is not in future
+- Must display error: "You must be 18 years or older to register" if under 18
+- Must display error: "Please enter a valid date" for invalid format
+
+**FR-009:** Terms and Conditions:
+- Required checkbox
+- Must be checked to submit form
+- Must display error: "You must accept the Terms and Conditions to create an account" if unchecked
+- Link to Terms and Conditions page (opens in new tab)
+
+**FR-010:** Marketing emails:
+- Optional checkbox
+- Default: unchecked
+- If checked, user will receive marketing emails
+- Preference stored in user profile
+
+### 3.2 Registration Processing
+
+**FR-011:** Form submission:
+- Validate all fields before submission
+- Display loading indicator during processing
+- Disable submit button during processing
+- On validation error, highlight invalid fields
+- On success, create user account and send verification email
+
+**FR-012:** Account creation:
+- Create user record in database with status "pending_verification"
+- Hash password using bcrypt (cost factor: 12)
+- Generate unique verification token (UUID)
+- Store verification token with 24-hour expiration
+- Send verification email with verification link
+- Log registration attempt (IP address, timestamp, user agent)
+
+**FR-013:** Duplicate email handling:
+- Check if email exists before creating account
+- If exists, display error: "This email is already registered. Please sign in instead."
+- Provide "Forgot Password" link if user forgot password
+- Do not reveal if email exists to prevent email enumeration attacks
+
+**FR-014:** Password security:
+- Hash password using bcrypt before storage
+- Never store plain text password
+- Never return password in API responses
+- Implement password strength meter (visual indicator)
+
+### 3.3 Email Verification
+
+**FR-015:** Verification email:
+- Send email immediately after registration
+- Email subject: "Verify your email address"
+- Email contains verification link with token
+- Link format: `https://app.example.com/verify-email?token={token}`
+- Link expires after 24 hours
+- Email includes "Resend verification email" option
+
+**FR-016:** Email verification process:
+- User clicks verification link in email
+- System validates token (exists, not expired, not used)
+- If valid, update user status to "verified"
+- Mark verification token as used
+- Redirect to login page with success message: "Email verified successfully. Please sign in."
+- If invalid/expired, display error: "Verification link is invalid or expired. Please request a new verification email."
+
+**FR-017:** Resend verification email:
+- User can request new verification email
+- Generate new verification token
+- Invalidate old verification token
+- Send new verification email
+- Limit resend to 3 times per hour per email
+- Display message: "Verification email sent. Please check your inbox."
+
+**FR-018:** Unverified account restrictions:
+- Unverified accounts cannot log in
+- Display message: "Please verify your email address before signing in. Check your inbox for verification link."
+- Allow resend verification email from login page
+- Unverified accounts are deleted after 7 days if not verified
+
+### 3.4 Security Requirements
+
+**FR-019:** Input sanitization:
+- Sanitize all user inputs to prevent XSS attacks
+- Validate and escape special characters
+- Prevent SQL injection through parameterized queries
+- Block common attack patterns
+
+**FR-020:** Rate limiting:
+- Limit registration attempts to 5 per hour per IP address
+- Limit registration attempts to 3 per hour per email address
+- Display error: "Too many registration attempts. Please try again later."
+- Implement CAPTCHA after 3 failed attempts
+
+**FR-021:** Data protection:
+- Encrypt sensitive data in transit (HTTPS)
+- Encrypt sensitive data at rest
+- Comply with GDPR and CCPA regulations
+- Allow users to delete their accounts and data
+
+**FR-022:** Password requirements enforcement:
+- Enforce password strength requirements
+- Display password strength meter
+- Provide password requirements checklist
+- Prevent common weak passwords (e.g., "password123", "12345678")
+
+## 4. Non-Functional Requirements
+
+### 4.1 Performance
+
+**NFR-001:** Registration performance:
+- Page load time: < 2 seconds
+- Form validation: < 100ms (real-time)
+- Account creation API: < 500ms (95th percentile)
+- Email sending: < 5 seconds
+
+**NFR-002:** Scalability:
+- Support 1000+ concurrent registrations
+- Handle traffic spikes during promotions
+
+### 4.2 Usability
+
+**NFR-003:** User experience:
+- Clear, step-by-step registration flow
+- Real-time form validation with helpful error messages
+- Progress indicator during submission
+- Success confirmation with next steps
+- Mobile-optimized registration form
+
+**NFR-004:** Accessibility:
+- WCAG 2.1 AA compliance
+- Keyboard navigation support
+- Screen reader compatibility
+- Clear focus indicators
+- Color contrast ratio: minimum 4.5:1
+
+### 4.3 Security
+
+**NFR-005:** Security standards:
+- OWASP Top 10 security practices
+- Regular security audits
+- Vulnerability scanning
+- Penetration testing
+
+## 5. User Flows
+
+### 5.1 Successful Registration Flow
+
+1. User navigates to registration page
+2. User enters first name: "John"
+3. User enters last name: "Doe"
+4. User enters email: "john.doe@example.com"
+5. User enters password: "SecurePass123!"
+6. User confirms password: "SecurePass123!"
+7. User enters phone number (optional): "+1-555-123-4567"
+8. User checks "I agree to Terms and Conditions"
+9. User clicks "Create Account"
+10. System validates all fields (all valid)
+11. System creates user account
+12. System sends verification email
+13. System displays success message: "Account created! Please check your email to verify your account."
+14. User receives verification email
+15. User clicks verification link
+16. System verifies email
+17. System redirects to login page with success message
+
+### 5.2 Registration with Validation Errors
+
+1. User navigates to registration page
+2. User enters invalid email: "invalid-email"
+3. User enters weak password: "123"
+4. User leaves first name empty
+5. User clicks "Create Account"
+6. System validates fields (multiple errors)
+7. System displays errors:
+   - "Please enter a valid email address"
+   - "Password must be at least 8 characters with uppercase, lowercase, number, and special character"
+   - "First name is required"
+8. User corrects all errors
+9. User resubmits form
+10. System validates (all valid)
+11. System creates account
+
+### 5.3 Duplicate Email Registration
+
+1. User navigates to registration page
+2. User enters email that already exists: "existing@example.com"
+3. User fills all other fields correctly
+4. User clicks "Create Account"
+5. System checks for duplicate email
+6. System displays error: "This email is already registered. Please sign in instead."
+7. System provides "Sign in" link
+8. User clicks "Sign in" link
+9. User is redirected to login page
+
+## 6. Technical Specifications
+
+### 6.1 API Endpoints
+
+**POST /api/auth/register**
+- Request body: `{ "firstName": "John", "lastName": "Doe", "email": "john.doe@example.com", "password": "SecurePass123!", "confirmPassword": "SecurePass123!", "phone": "+15551234567", "dateOfBirth": "1990-01-01", "acceptTerms": true, "acceptMarketing": false }`
+- Success response (201): `{ "success": true, "message": "Account created. Please verify your email.", "userId": "uuid" }`
+- Error response (400): `{ "error": "Validation failed", "errors": { "email": "This email is already registered" } }`
+
+**GET /api/auth/verify-email?token={token}**
+- Success response (200): `{ "success": true, "message": "Email verified successfully" }`
+- Error response (400): `{ "error": "Invalid or expired verification token" }`
+
+**POST /api/auth/resend-verification**
+- Request body: `{ "email": "john.doe@example.com" }`
+- Success response (200): `{ "success": true, "message": "Verification email sent" }`
+
+### 6.2 Database Schema
+
+**users table:**
+- id (UUID, primary key)
+- first_name (VARCHAR(50))
+- last_name (VARCHAR(50))
+- email (VARCHAR(254), unique, indexed)
+- password_hash (VARCHAR(255))
+- phone (VARCHAR(20), nullable)
+- date_of_birth (DATE, nullable)
+- email_verified (BOOLEAN, default false)
+- verification_token (VARCHAR(255), nullable, indexed)
+- verification_token_expires_at (TIMESTAMP, nullable)
+- marketing_emails_opt_in (BOOLEAN, default false)
+- status (ENUM: 'pending_verification', 'verified', 'suspended', 'deleted')
+- created_at (TIMESTAMP)
+- updated_at (TIMESTAMP)
+
+## 7. Acceptance Criteria
+
+1. ✅ User can successfully register with valid information
+2. ✅ All validation errors display correctly
+3. ✅ Duplicate email is detected and error displayed
+4. ✅ Password strength requirements are enforced
+5. ✅ Verification email is sent after registration
+6. ✅ Email verification works correctly
+7. ✅ Unverified accounts cannot log in
+8. ✅ Resend verification email works
+9. ✅ Rate limiting prevents abuse
+10. ✅ All security requirements are implemented
+11. ✅ Registration form is mobile-responsive
+12. ✅ Form is accessible via keyboard and screen readers
+
+## 8. Dependencies
+
+- Email service (verification emails)
+- Database (user storage)
+- Password hashing library (bcrypt)
+- HTTPS certificate (SSL/TLS)
+- CAPTCHA service (abuse prevention)
+- Redis (rate limiting)
+
+## 9. Out of Scope
+
+- Social registration (Google, Facebook) - future enhancement
+- Two-factor authentication - future enhancement
+- Profile picture upload - separate module
+- Address management - separate module
+- Account deletion - separate module
+
+## 10. Testing Requirements
+
+- Unit tests for all validation logic
+- Integration tests for registration flow
+- End-to-end tests for email verification
+- Security testing (XSS, SQL injection, rate limiting)
+- Performance testing (load testing)
+- Usability testing (user acceptance testing)
+

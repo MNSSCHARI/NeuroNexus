@@ -6,6 +6,52 @@
 const ExcelJS = require('exceljs');
 const PDFDocument = require('pdfkit');
 const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, AlignmentType } = require('docx');
+const fs = require('fs-extra');
+const path = require('path');
+
+// Debug logging helper
+function debugLog(step, message, data = {}) {
+  const timestamp = new Date().toISOString();
+  console.log(`[EXPORT DEBUG ${timestamp}] ${step}: ${message}`);
+  if (Object.keys(data).length > 0) {
+    console.log(`  Data:`, JSON.stringify(data, null, 2));
+  }
+}
+
+// Check if dependencies are installed
+function checkDependencies() {
+  const dependencies = {
+    exceljs: false,
+    pdfkit: false,
+    docx: false
+  };
+  
+  try {
+    require.resolve('exceljs');
+    dependencies.exceljs = true;
+    debugLog('DEPENDENCY_CHECK', 'ExcelJS is installed');
+  } catch (e) {
+    debugLog('DEPENDENCY_CHECK', 'ExcelJS is NOT installed', { error: e.message });
+  }
+  
+  try {
+    require.resolve('pdfkit');
+    dependencies.pdfkit = true;
+    debugLog('DEPENDENCY_CHECK', 'PDFKit is installed');
+  } catch (e) {
+    debugLog('DEPENDENCY_CHECK', 'PDFKit is NOT installed', { error: e.message });
+  }
+  
+  try {
+    require.resolve('docx');
+    dependencies.docx = true;
+    debugLog('DEPENDENCY_CHECK', 'docx is installed');
+  } catch (e) {
+    debugLog('DEPENDENCY_CHECK', 'docx is NOT installed', { error: e.message });
+  }
+  
+  return dependencies;
+}
 
 /**
  * Export test cases to Excel with professional styling
@@ -14,7 +60,20 @@ const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, Tab
  * @returns {Promise<Buffer>} Excel file buffer
  */
 async function exportTestCasesToExcel(testCases, projectName = 'Project') {
-  const workbook = new ExcelJS.Workbook();
+  debugLog('EXCEL_EXPORT', 'Starting Excel export', {
+    testCasesCount: testCases?.length || 0,
+    projectName
+  });
+  
+  try {
+    // Check dependencies
+    const deps = checkDependencies();
+    if (!deps.exceljs) {
+      throw new Error('ExcelJS dependency is not installed. Run: npm install exceljs');
+    }
+    
+    debugLog('EXCEL_EXPORT', 'Dependencies OK, creating workbook');
+    const workbook = new ExcelJS.Workbook();
   
   // Create main test cases sheet
   const worksheet = workbook.addWorksheet('Test Cases');
@@ -153,9 +212,25 @@ async function exportTestCasesToExcel(testCases, projectName = 'Project') {
     column.width = 25;
   });
   
-  // Generate buffer
-  const buffer = await workbook.xlsx.writeBuffer();
-  return Buffer.from(buffer);
+    // Generate buffer
+    debugLog('EXCEL_EXPORT', 'Generating Excel buffer');
+    const buffer = await workbook.xlsx.writeBuffer();
+    const excelBuffer = Buffer.from(buffer);
+    
+    debugLog('EXCEL_EXPORT', 'Excel export successful', {
+      bufferSize: excelBuffer.length,
+      bufferType: excelBuffer.constructor.name
+    });
+    
+    return excelBuffer;
+  } catch (error) {
+    debugLog('EXCEL_EXPORT', 'Excel export FAILED', {
+      error: error.message,
+      stack: error.stack,
+      testCasesCount: testCases?.length || 0
+    });
+    throw new Error(`Excel export failed: ${error.message}`);
+  }
 }
 
 /**
@@ -165,17 +240,49 @@ async function exportTestCasesToExcel(testCases, projectName = 'Project') {
  * @returns {Promise<Buffer>} PDF file buffer
  */
 async function exportBugReportToPDF(bugReport, screenshots = []) {
-  return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({
+  debugLog('PDF_EXPORT', 'Starting PDF export', {
+    bugReportType: typeof bugReport,
+    screenshotsCount: screenshots?.length || 0
+  });
+  
+  try {
+    // Check dependencies
+    const deps = checkDependencies();
+    if (!deps.pdfkit) {
+      throw new Error('PDFKit dependency is not installed. Run: npm install pdfkit');
+    }
+    
+    debugLog('PDF_EXPORT', 'Dependencies OK, creating PDF document');
+    
+    return new Promise((resolve, reject) => {
+      const doc = new PDFDocument({
       size: 'A4',
       margins: { top: 50, bottom: 50, left: 50, right: 50 }
     });
     
-    const chunks = [];
-    
-    doc.on('data', chunk => chunks.push(chunk));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
-    doc.on('error', reject);
+      const chunks = [];
+      
+      doc.on('data', chunk => {
+        chunks.push(chunk);
+        debugLog('PDF_EXPORT', 'PDF chunk generated', { chunkSize: chunk.length });
+      });
+      
+      doc.on('end', () => {
+        const buffer = Buffer.concat(chunks);
+        debugLog('PDF_EXPORT', 'PDF export successful', {
+          bufferSize: buffer.length,
+          totalChunks: chunks.length
+        });
+        resolve(buffer);
+      });
+      
+      doc.on('error', (error) => {
+        debugLog('PDF_EXPORT', 'PDF generation error', {
+          error: error.message,
+          stack: error.stack
+        });
+        reject(error);
+      });
     
     // Parse bug report (handle both object and string)
     let title = '';
@@ -337,8 +444,16 @@ async function exportBugReportToPDF(bugReport, screenshots = []) {
          { align: 'center' }
        );
     
-    doc.end();
-  });
+      debugLog('PDF_EXPORT', 'Finalizing PDF document');
+      doc.end();
+    });
+  } catch (error) {
+    debugLog('PDF_EXPORT', 'PDF export FAILED', {
+      error: error.message,
+      stack: error.stack
+    });
+    throw new Error(`PDF export failed: ${error.message}`);
+  }
 }
 
 /**
@@ -348,8 +463,22 @@ async function exportBugReportToPDF(bugReport, screenshots = []) {
  * @returns {Promise<Buffer>} DOCX file buffer
  */
 async function exportTestPlanToDocx(testPlan, projectName = 'Project') {
-  // Parse test plan (handle both object and string)
-  let sections = {};
+  debugLog('DOCX_EXPORT', 'Starting DOCX export', {
+    testPlanType: typeof testPlan,
+    projectName
+  });
+  
+  try {
+    // Check dependencies
+    const deps = checkDependencies();
+    if (!deps.docx) {
+      throw new Error('docx dependency is not installed. Run: npm install docx');
+    }
+    
+    debugLog('DOCX_EXPORT', 'Dependencies OK, parsing test plan');
+    
+    // Parse test plan (handle both object and string)
+    let sections = {};
   
   if (typeof testPlan === 'string') {
     // Parse markdown/string format
@@ -489,14 +618,229 @@ async function exportTestPlanToDocx(testPlan, projectName = 'Project') {
     }]
   });
   
-  // Generate buffer
-  const buffer = await Packer.toBuffer(doc);
-  return buffer;
+    debugLog('DOCX_EXPORT', 'Creating DOCX document', {
+      sectionsCount: Object.keys(sections).length
+    });
+    
+    // Generate buffer
+    debugLog('DOCX_EXPORT', 'Generating DOCX buffer');
+    const buffer = await Packer.toBuffer(doc);
+    
+    debugLog('DOCX_EXPORT', 'DOCX export successful', {
+      bufferSize: buffer.length,
+      bufferType: buffer.constructor.name
+    });
+    
+    return buffer;
+  } catch (error) {
+    debugLog('DOCX_EXPORT', 'DOCX export FAILED', {
+      error: error.message,
+      stack: error.stack
+    });
+    throw new Error(`DOCX export failed: ${error.message}`);
+  }
+}
+
+/**
+ * Test export functions with minimal test data
+ */
+async function testExcelExport() {
+  debugLog('TEST', 'Testing Excel export with minimal data');
+  
+  const testData = [
+    {
+      testCaseId: 'TC_TEST_001',
+      module: 'Test Module',
+      description: 'Test description',
+      preconditions: ['Precondition 1'],
+      steps: ['Step 1', 'Step 2'],
+      expectedResults: 'Expected result',
+      priority: 'High',
+      type: 'Positive'
+    },
+    {
+      testCaseId: 'TC_TEST_002',
+      module: 'Test Module',
+      description: 'Another test',
+      preconditions: ['Precondition 2'],
+      steps: ['Step 1'],
+      expectedResults: 'Another result',
+      priority: 'Medium',
+      type: 'Negative'
+    },
+    {
+      testCaseId: 'TC_TEST_003',
+      module: 'Test Module',
+      description: 'Third test',
+      preconditions: [],
+      steps: ['Step 1', 'Step 2', 'Step 3'],
+      expectedResults: 'Third result',
+      priority: 'Low',
+      type: 'Edge Case'
+    }
+  ];
+  
+  try {
+    const buffer = await exportTestCasesToExcel(testData, 'TestProject');
+    
+    // Try to save to file for verification
+    const testDir = path.join(__dirname, '../data/test-exports');
+    await fs.ensureDir(testDir);
+    const testFile = path.join(testDir, `test-excel-${Date.now()}.xlsx`);
+    await fs.writeFile(testFile, buffer);
+    
+    debugLog('TEST', 'Excel test file created', { filePath: testFile, size: buffer.length });
+    
+    return {
+      success: true,
+      bufferSize: buffer.length,
+      testFile,
+      message: 'Excel export test passed'
+    };
+  } catch (error) {
+    debugLog('TEST', 'Excel export test FAILED', { error: error.message });
+    return {
+      success: false,
+      error: error.message,
+      stack: error.stack
+    };
+  }
+}
+
+async function testPDFExport() {
+  debugLog('TEST', 'Testing PDF export with minimal data');
+  
+  const testData = {
+    title: 'Test Bug Report',
+    description: 'This is a test bug report description.',
+    steps: [
+      'Step 1: Open the application',
+      'Step 2: Click the button',
+      'Step 3: Observe the issue'
+    ],
+    expectedBehavior: 'Button should work correctly',
+    actualBehavior: 'Button does not respond',
+    environment: 'Chrome 120, Windows 11',
+    priority: 'High'
+  };
+  
+  try {
+    const buffer = await exportBugReportToPDF(testData);
+    
+    // Try to save to file for verification
+    const testDir = path.join(__dirname, '../data/test-exports');
+    await fs.ensureDir(testDir);
+    const testFile = path.join(testDir, `test-pdf-${Date.now()}.pdf`);
+    await fs.writeFile(testFile, buffer);
+    
+    debugLog('TEST', 'PDF test file created', { filePath: testFile, size: buffer.length });
+    
+    return {
+      success: true,
+      bufferSize: buffer.length,
+      testFile,
+      message: 'PDF export test passed'
+    };
+  } catch (error) {
+    debugLog('TEST', 'PDF export test FAILED', { error: error.message });
+    return {
+      success: false,
+      error: error.message,
+      stack: error.stack
+    };
+  }
+}
+
+async function testDocxExport() {
+  debugLog('TEST', 'Testing DOCX export with minimal data');
+  
+  const testData = {
+    objectives: 'Test objectives for the test plan',
+    scope: 'Test scope description',
+    approach: 'Test approach strategy',
+    types: 'Unit testing, Integration testing',
+    environment: 'Test environment requirements',
+    data: 'Test data requirements',
+    risks: 'Risk assessment details',
+    timeline: 'Timeline and estimation',
+    resources: 'Resource requirements',
+    criteria: 'Entry and exit criteria'
+  };
+  
+  try {
+    const buffer = await exportTestPlanToDocx(testData, 'TestProject');
+    
+    // Try to save to file for verification
+    const testDir = path.join(__dirname, '../data/test-exports');
+    await fs.ensureDir(testDir);
+    const testFile = path.join(testDir, `test-docx-${Date.now()}.docx`);
+    await fs.writeFile(testFile, buffer);
+    
+    debugLog('TEST', 'DOCX test file created', { filePath: testFile, size: buffer.length });
+    
+    return {
+      success: true,
+      bufferSize: buffer.length,
+      testFile,
+      message: 'DOCX export test passed'
+    };
+  } catch (error) {
+    debugLog('TEST', 'DOCX export test FAILED', { error: error.message });
+    return {
+      success: false,
+      error: error.message,
+      stack: error.stack
+    };
+  }
+}
+
+/**
+ * Run all export tests
+ */
+async function testAllExports() {
+  debugLog('TEST_ALL', 'Running all export tests');
+  
+  const results = {
+    dependencies: checkDependencies(),
+    excel: null,
+    pdf: null,
+    docx: null
+  };
+  
+  // Test Excel
+  try {
+    results.excel = await testExcelExport();
+  } catch (error) {
+    results.excel = { success: false, error: error.message };
+  }
+  
+  // Test PDF
+  try {
+    results.pdf = await testPDFExport();
+  } catch (error) {
+    results.pdf = { success: false, error: error.message };
+  }
+  
+  // Test DOCX
+  try {
+    results.docx = await testDocxExport();
+  } catch (error) {
+    results.docx = { success: false, error: error.message };
+  }
+  
+  debugLog('TEST_ALL', 'All tests completed', results);
+  
+  return results;
 }
 
 module.exports = {
   exportTestCasesToExcel,
   exportBugReportToPDF,
-  exportTestPlanToDocx
+  exportTestPlanToDocx,
+  testExcelExport,
+  testPDFExport,
+  testDocxExport,
+  testAllExports,
+  checkDependencies
 };
 

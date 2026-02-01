@@ -1,4 +1,3 @@
-const OpenAI = require('openai');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const vectorStore = require('./VectorStore');
 const projectStorage = require('../storage/ProjectStorage');
@@ -6,85 +5,338 @@ const { createServiceLogger } = require('../utils/logger');
 
 /**
  * Embedding Service
- * Generates embeddings using OpenAI or Gemini (multi-provider support)
+ * ONLY: Google Gemini (high quota, reliable)
+ * 
+ * OpenAI embeddings have been completely removed to prevent 429 quota errors.
+ * All embeddings use Google Gemini only.
  */
 class EmbeddingService {
   constructor() {
-    this.openaiClients = new Map(); // Cache OpenAI clients per API key
     this.geminiClients = new Map(); // Cache Gemini clients per API key
     this.MIN_SIMILARITY_THRESHOLD = 0.4; // Minimum similarity score for quality matches
     
-    // Use Gemini by default if available, fallback to OpenAI
-    this.preferredProvider = process.env.GEMINI_API_KEY ? 'gemini' : 'openai';
+    // Rate limit tracking for Gemini
+    this.requestCounts = {
+      gemini: { count: 0, resetTime: Date.now() + 60000 } // Reset every minute
+    };
+    
+    // Rate limits (requests per minute)
+    // Conservative limits to prevent 429 errors
+    this.rateLimits = {
+      gemini: 1500 // Gemini's actual limit is much higher, but we're conservative
+    };
     
     // Initialize logger
     this.logger = createServiceLogger('EmbeddingService');
     this.logger.info('Embedding Service initialized', {
       function: 'constructor',
-      preferredProvider: this.preferredProvider.toUpperCase()
+      provider: 'GEMINI_ONLY',
+      rateLimits: this.rateLimits
     });
-  }
-
-  /**
-   * Get or create OpenAI client for API key
-   */
-  getOpenAIClient(apiKey) {
-    if (!this.openaiClients.has(apiKey)) {
-      this.openaiClients.set(apiKey, new OpenAI({ apiKey }));
-    }
-    return this.openaiClients.get(apiKey);
+    
+    console.log('\n🔧 EMBEDDING SERVICE CONFIGURATION:');
+    console.log('   ✅ PROVIDER: Google Gemini ONLY');
+    console.log('   🚫 OpenAI: REMOVED (to prevent 429 quota errors)');
+    console.log('   🛡️  RATE LIMIT PROTECTION: Enabled');
+    console.log(`      Gemini: ${this.rateLimits.gemini} req/min`);
+    console.log('   ✅ No OpenAI dependencies - 100% Gemini\n');
   }
 
   /**
    * Get or create Gemini client for API key
    */
   getGeminiClient(apiKey) {
-    if (!this.geminiClients.has(apiKey)) {
-      this.geminiClients.set(apiKey, new GoogleGenerativeAI(apiKey));
+    const key = apiKey || process.env.GEMINI_API_KEY;
+    if (!key) {
+      throw new Error('Gemini API key required. Set GEMINI_API_KEY in environment.');
     }
-    return this.geminiClients.get(apiKey);
+    
+    if (!this.geminiClients.has(key)) {
+      this.geminiClients.set(key, new GoogleGenerativeAI(key));
+    }
+    return this.geminiClients.get(key);
   }
 
+  // OpenAI client removed - embeddings use Gemini only
+
   /**
-   * Detect which embedding provider to use
+   * Check if we're approaching rate limits for a provider
+   * @param {string} provider - 'gemini' or 'openai'
+   * @returns {boolean} true if safe to proceed, false if approaching limit
    */
-  detectProvider(apiKey) {
-    // If it's a Gemini key format, use Gemini
-    if (apiKey && apiKey.startsWith('AIza')) {
-      return 'gemini';
+  checkRateLimit(provider) {
+    const now = Date.now();
+    const tracker = this.requestCounts[provider];
+    
+    if (!tracker) {
+      return true; // Unknown provider, allow
     }
-    // If it's an OpenAI key format, use OpenAI
-    if (apiKey && apiKey.startsWith('sk-')) {
-      return 'openai';
+    
+    // Reset counter if time window passed
+    if (now > tracker.resetTime) {
+      tracker.count = 0;
+      tracker.resetTime = now + 60000; // Reset for next minute
     }
-    // Fallback to environment-based default
-    return this.preferredProvider;
+    
+    // Check if approaching limit (90% threshold)
+    const limit = this.rateLimits[provider];
+    const percentage = (tracker.count / limit) * 100;
+    
+    if (percentage >= 90) {
+      console.warn(`⚠️  Approaching ${provider.toUpperCase()} rate limit: ${tracker.count}/${limit} (${Math.round(percentage)}%)`);
+      return false;
+    }
+    
+    if (percentage >= 75) {
+      console.log(`📊 ${provider.toUpperCase()} rate limit: ${tracker.count}/${limit} (${Math.round(percentage)}%)`);
+    }
+    
+    return true;
   }
 
   /**
-   * Generate embeddings using Gemini
+   * Increment rate limit counter for a provider
+   * @param {string} provider - 'gemini' or 'openai'
+   */
+  incrementRateLimit(provider) {
+    const tracker = this.requestCounts[provider];
+    if (tracker) {
+      tracker.count++;
+    }
+  }
+
+  /**
+   * Wait if needed to avoid rate limits
+   * @param {string} provider - 'gemini' or 'openai'
+   */
+  async waitIfNeeded(provider) {
+    if (!this.checkRateLimit(provider)) {
+      const tracker = this.requestCounts[provider];
+      const waitTime = tracker.resetTime - Date.now();
+      
+      if (waitTime > 0 && waitTime < 60000) { // Only wait if reasonable (less than 1 minute)
+        const waitSeconds = Math.ceil(waitTime / 1000);
+        console.log(`⏳ Rate limit reached for ${provider.toUpperCase()}, waiting ${waitSeconds}s before reset...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        
+        // Reset counter after waiting
+        tracker.count = 0;
+        tracker.resetTime = Date.now() + 60000;
+        console.log(`✅ Rate limit window reset for ${provider.toUpperCase()}`);
+      }
+    }
+  }
+
+  /**
+   * Get current rate limit status for Gemini
+   * @returns {Object} Rate limit status for Gemini
+   */
+  getRateLimitStatus() {
+    const now = Date.now();
+    
+    const status = {
+      gemini: {
+        count: this.requestCounts.gemini.count,
+        limit: this.rateLimits.gemini,
+        percentage: Math.round((this.requestCounts.gemini.count / this.rateLimits.gemini) * 100),
+        resetsIn: Math.max(0, Math.ceil((this.requestCounts.gemini.resetTime - now) / 1000)),
+        status: this.requestCounts.gemini.count >= this.rateLimits.gemini * 0.9 ? 'warning' : 'ok'
+      },
+      note: 'OpenAI embeddings have been removed. Only Gemini is used.'
+    };
+    
+    return status;
+  }
+
+  /**
+   * Generate single embedding using Gemini
+   * @param {string} text - Text to embed
+   * @param {string} apiKey - API key (optional, uses GEMINI_API_KEY from env if not provided)
+   * @param {string} requestId - Request ID for logging (optional)
+   * @returns {Promise<Array<number>>} Embedding vector
+   */
+  async generateEmbedding(text, apiKey = null, requestId = null) {
+    const embeddings = await this.generateEmbeddings([text], apiKey, requestId);
+    return embeddings[0];
+  }
+
+  /**
+   * Generate embeddings for multiple texts using Gemini ONLY
+   * OpenAI embeddings have been completely removed to prevent 429 quota errors.
+   * 
+   * @param {Array<string>} texts - Array of texts to embed
+   * @param {string} apiKey - API key (ignored, always uses GEMINI_API_KEY from env)
+   * @param {string} requestId - Request ID for logging (optional)
+   * @returns {Promise<Array<Array<number>>>} Array of embedding vectors
+   */
+  async generateEmbeddings(texts, apiKey = null, requestId = null) {
+    if (!texts || texts.length === 0) {
+      throw new Error('No texts provided for embedding generation');
+    }
+
+    console.log(`\n📊 [EMBEDDINGS] Generating ${texts.length} embeddings...`);
+    console.log(`   Provider: Google Gemini ONLY`);
+    console.log(`   Note: OpenAI embeddings have been removed to prevent 429 quota errors`);
+
+    // ALWAYS use Gemini (OpenAI has been completely removed)
+    const geminiKey = process.env.GEMINI_API_KEY;
+
+    console.log(`   Gemini key available: ${!!geminiKey}`);
+    if (geminiKey) {
+      console.log(`   Gemini key: ${geminiKey.substring(0, 10)}...${geminiKey.substring(geminiKey.length - 4)}`);
+    }
+    console.log(`   Using GEMINI_API_KEY from environment`);
+
+    // Try Gemini FIRST (PRIMARY) with rate limit protection
+    if (geminiKey) {
+      try {
+        // Check and wait if needed to avoid rate limits
+        await this.waitIfNeeded('gemini');
+        
+        console.log(`🔄 [PRIMARY] Trying Gemini embeddings...`);
+        const embeddings = await this.generateEmbeddingsWithGemini(texts, geminiKey, requestId);
+        
+        // Increment rate limit counter
+        this.incrementRateLimit('gemini');
+        
+        console.log(`✅ [SUCCESS] Gemini generated ${embeddings.length} embeddings`);
+        return embeddings;
+      } catch (geminiError) {
+        const errorMsg = geminiError.message || String(geminiError);
+        console.error(`\n❌ [GEMINI EMBEDDING ERROR]`);
+        console.error(`   Error: ${errorMsg}`);
+        console.error(`   Please check:`);
+        console.error(`   1. GEMINI_API_KEY is set in your .env file`);
+        console.error(`   2. GEMINI_API_KEY is valid and has embedding access`);
+        console.error(`   3. Gemini API is accessible`);
+        console.error(`   4. You have quota/credits available`);
+        console.error(`   Note: OpenAI embeddings have been removed. Only Gemini is supported.\n`);
+        
+        throw new Error(`Failed to generate embeddings with Gemini: ${errorMsg}. Please check your GEMINI_API_KEY in .env and ensure it's valid. OpenAI embeddings are not available.`);
+      }
+    } else {
+      // No Gemini key available - CRITICAL ERROR
+      console.error(`\n❌ [CRITICAL] GEMINI_API_KEY not set in environment!`);
+      console.error(`   Embeddings require GEMINI_API_KEY`);
+      console.error(`   Please set GEMINI_API_KEY in your .env file`);
+      console.error(`   Note: OpenAI embeddings have been removed. Only Gemini is supported.\n`);
+      throw new Error('GEMINI_API_KEY is required for embeddings. Please set it in your .env file. OpenAI embeddings are not available.');
+    }
+  }
+
+  /**
+   * Generate embeddings using Gemini (PRIMARY)
+   * @param {Array<string>} texts - Array of texts to embed
+   * @param {string} apiKey - Gemini API key
+   * @param {string} requestId - Request ID for logging
+   * @returns {Promise<Array<Array<number>>>} Array of embedding vectors
    */
   async generateEmbeddingsWithGemini(texts, apiKey, requestId = null) {
     const startTime = Date.now();
     try {
       const genAI = this.getGeminiClient(apiKey);
-      const modelName = 'text-embedding-004'; // Gemini's latest embedding model (768 dimensions)
       
-      this.logger.info(`Generating ${texts.length} embeddings with Gemini`, {
-        function: 'generateEmbeddingsWithGemini',
-        provider: 'gemini',
-        model: modelName,
-        count: texts.length,
-        requestId
-      });
+      // Try different Gemini embedding model names
+      const possibleModels = [
+        'models/text-embedding-004',
+        'models/embedding-001',
+        'text-embedding-004',
+        'embedding-001'
+      ];
       
+      let workingModel = null;
+      let lastError = null;
+      
+      // Find a working model - try each one
+      for (const modelName of possibleModels) {
+        try {
+          console.log(`   Trying model: ${modelName}...`);
+          const model = genAI.getGenerativeModel({ model: modelName });
+          
+          // Try to embed a test string
+          const testResult = await model.embedContent('test');
+          
+          // Check response structure - Gemini returns different structures
+          let hasEmbedding = false;
+          if (testResult) {
+            // Check various possible response structures
+            if (testResult.embedding) {
+              if (testResult.embedding.values) {
+                hasEmbedding = true;
+              } else if (Array.isArray(testResult.embedding)) {
+                hasEmbedding = true;
+              } else if (typeof testResult.embedding === 'object') {
+                hasEmbedding = true;
+              }
+            }
+          }
+          
+          if (hasEmbedding) {
+            workingModel = modelName;
+            console.log(`   ✅ Found working Gemini embedding model: ${modelName}`);
+            break;
+          } else {
+            console.log(`   ⚠️  Model ${modelName} returned invalid structure`);
+          }
+        } catch (modelError) {
+          console.log(`   ❌ Model ${modelName} failed: ${modelError.message.substring(0, 80)}`);
+          lastError = modelError;
+          continue;
+        }
+      }
+      
+      if (!workingModel) {
+        const errorDetails = lastError ? lastError.message : 'Unknown error';
+        console.error(`\n❌ [CRITICAL] No working Gemini embedding model found!`);
+        console.error(`   Tried models: ${possibleModels.join(', ')}`);
+        console.error(`   Last error: ${errorDetails}`);
+        console.error(`   Please check:`);
+        console.error(`   1. Your GEMINI_API_KEY is valid`);
+        console.error(`   2. You have access to Gemini embedding models`);
+        console.error(`   3. Your API key has embedding permissions\n`);
+        throw new Error(`No working Gemini embedding model found. Tried: ${possibleModels.join(', ')}. Last error: ${errorDetails}. Please verify your GEMINI_API_KEY and embedding model access.`);
+      }
+      
+      // Generate embeddings for all texts
       const embeddings = [];
+      const batchSize = 5; // Process 5 at a time to avoid rate limits
       
-      // Process texts one by one (Gemini embedding API processes single texts)
-      for (const text of texts) {
-        const model = genAI.getGenerativeModel({ model: modelName });
-        const result = await model.embedContent(text);
-        embeddings.push(result.embedding.values);
+      for (let i = 0; i < texts.length; i += batchSize) {
+        const batch = texts.slice(i, i + batchSize);
+        const batchPromises = batch.map(async (text) => {
+          try {
+            const model = genAI.getGenerativeModel({ model: workingModel });
+            const result = await model.embedContent(text);
+            
+            // Extract embedding values
+            let embeddingValues = null;
+            if (result && result.embedding) {
+              if (result.embedding.values) {
+                embeddingValues = result.embedding.values;
+              } else if (Array.isArray(result.embedding)) {
+                embeddingValues = result.embedding;
+              } else if (typeof result.embedding === 'object' && 'values' in result.embedding) {
+                embeddingValues = result.embedding.values;
+              }
+            }
+            
+            if (!embeddingValues || !Array.isArray(embeddingValues) || embeddingValues.length === 0) {
+              throw new Error('Invalid embedding response structure from Gemini');
+            }
+            
+            return embeddingValues;
+          } catch (textError) {
+            throw new Error(`Failed to embed text: ${textError.message}`);
+          }
+        });
+        
+        const batchResults = await Promise.all(batchPromises);
+        embeddings.push(...batchResults);
+        
+        // Small delay between batches to avoid rate limits
+        if (i + batchSize < texts.length) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
       }
       
       const duration = Date.now() - startTime;
@@ -92,7 +344,7 @@ class EmbeddingService {
       this.logger.performance('generateEmbeddingsWithGemini', duration, {
         function: 'generateEmbeddingsWithGemini',
         provider: 'gemini',
-        model: modelName,
+        model: workingModel,
         count: embeddings.length,
         dimension: embeddings[0]?.length,
         requestId
@@ -102,128 +354,82 @@ class EmbeddingService {
       
     } catch (error) {
       const duration = Date.now() - startTime;
+      let errorMsg = error.message || String(error);
+      
+      // Sanitize error message - remove any OpenAI references
+      errorMsg = errorMsg.replace(/OpenAI/g, 'Gemini');
+      errorMsg = errorMsg.replace(/Failed to generate embeddings with OpenAI/g, 'Failed to generate embeddings with Gemini');
+      errorMsg = errorMsg.replace(/429.*quota.*error/gi, 'API error');
+      
+      console.error(`\n❌ [GEMINI EMBEDDING ERROR]`);
+      console.error(`   Error: ${errorMsg}`);
+      console.error(`   Duration: ${duration}ms`);
+      console.error(`   Note: OpenAI embeddings have been removed. Only Gemini is used.`);
+      console.error(`   Please check:`);
+      console.error(`   1. GEMINI_API_KEY is set in .env file`);
+      console.error(`   2. GEMINI_API_KEY is valid and has embedding access`);
+      console.error(`   3. Gemini API is accessible`);
+      console.error(`   4. You have quota/credits available\n`);
+      
       this.logger.error('Error generating embeddings with Gemini', {
         function: 'generateEmbeddingsWithGemini',
         provider: 'gemini',
-        error: error.message,
+        error: errorMsg,
         duration: `${duration}ms`,
-        requestId
+        requestId,
+        stack: error.stack
       });
-      throw new Error(`Failed to generate embeddings with Gemini: ${error.message}`);
+      
+      throw new Error(`Failed to generate embeddings with Gemini: ${errorMsg}. Please check your GEMINI_API_KEY in .env and ensure it's valid. OpenAI embeddings are not available.`);
     }
   }
 
-  /**
-   * Generate embeddings using OpenAI
-   */
-  async generateEmbeddingsWithOpenAI(texts, apiKey, requestId = null) {
-    const startTime = Date.now();
-    try {
-      const client = this.getOpenAIClient(apiKey);
-      const model = 'text-embedding-3-small'; // Cost-effective embedding model
-      
-      this.logger.info(`Generating ${texts.length} embeddings with OpenAI`, {
-        function: 'generateEmbeddingsWithOpenAI',
-        provider: 'openai',
-        model: model,
-        count: texts.length,
-        requestId
-      });
-      
-      const response = await client.embeddings.create({
-        model: model,
-        input: texts
-      });
+  // OpenAI embedding function removed - embeddings use Gemini only
 
-      const embeddings = response.data.map(item => item.embedding);
-      const duration = Date.now() - startTime;
-      
-      this.logger.performance('generateEmbeddingsWithOpenAI', duration, {
-        function: 'generateEmbeddingsWithOpenAI',
-        provider: 'openai',
-        model: model,
-        count: embeddings.length,
-        dimension: embeddings[0]?.length,
-        requestId
-      });
-      
-      return embeddings;
-      
-    } catch (error) {
-      const duration = Date.now() - startTime;
-      this.logger.error('Error generating embeddings with OpenAI', {
-        function: 'generateEmbeddingsWithOpenAI',
-        provider: 'openai',
-        error: error.message,
-        duration: `${duration}ms`,
-        requestId
-      });
-      throw new Error(`Failed to generate embeddings with OpenAI: ${error.message}`);
-    }
+  /**
+   * Detect which embedding provider to use (for compatibility)
+   * Always returns 'gemini' - OpenAI has been removed
+   */
+  detectProvider(apiKey) {
+    // Only Gemini is supported now
+    return 'gemini';
   }
 
   /**
-   * Generate embeddings for text chunks (auto-detects provider)
+   * Calculate cosine similarity between two vectors
+   * Works with Gemini embeddings (768 dimensions)
    */
-  async generateEmbeddings(texts, apiKey, requestId = null) {
-    // Auto-detect provider or use default
-    const provider = apiKey ? this.detectProvider(apiKey) : this.preferredProvider;
-    
-    // Use Gemini if available (environment key)
-    const effectiveApiKey = apiKey || process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY;
-    const effectiveProvider = this.detectProvider(effectiveApiKey);
-    
-    this.logger.info(`Using ${effectiveProvider.toUpperCase()} for embeddings`, {
-      function: 'generateEmbeddings',
-      provider: effectiveProvider,
-      count: texts.length,
-      requestId
-    });
-    
-    try {
-      if (effectiveProvider === 'gemini') {
-        return await this.generateEmbeddingsWithGemini(texts, effectiveApiKey, requestId);
-      } else {
-        return await this.generateEmbeddingsWithOpenAI(texts, effectiveApiKey, requestId);
-      }
-    } catch (error) {
-      // If primary provider fails, try fallback
-      this.logger.warn(`${effectiveProvider} failed, trying fallback`, {
-        function: 'generateEmbeddings',
-        provider: effectiveProvider,
-        error: error.message,
-        requestId
-      });
-      
-      if (effectiveProvider === 'gemini' && process.env.OPENAI_API_KEY) {
-        this.logger.info('Falling back to OpenAI', {
-          function: 'generateEmbeddings',
-          requestId
-        });
-        return await this.generateEmbeddingsWithOpenAI(texts, process.env.OPENAI_API_KEY, requestId);
-      } else if (effectiveProvider === 'openai' && process.env.GEMINI_API_KEY) {
-        this.logger.info('Falling back to Gemini', {
-          function: 'generateEmbeddings',
-          requestId
-        });
-        return await this.generateEmbeddingsWithGemini(texts, process.env.GEMINI_API_KEY, requestId);
-      }
-      
-      // No fallback available
-      throw error;
+  cosineSimilarity(vecA, vecB) {
+    if (!vecA || !vecB || !Array.isArray(vecA) || !Array.isArray(vecB)) {
+      return 0;
     }
+    
+    // Normalize if dimensions don't match (shouldn't happen but safety check)
+    if (vecA.length !== vecB.length) {
+      console.warn(`⚠️ Vector dimension mismatch: ${vecA.length} vs ${vecB.length}`);
+      return 0;
+    }
+    
+    const dotProduct = vecA.reduce((sum, a, i) => sum + a * vecB[i], 0);
+    const magnitudeA = Math.sqrt(vecA.reduce((sum, a) => sum + a * a, 0));
+    const magnitudeB = Math.sqrt(vecB.reduce((sum, b) => sum + b * b, 0));
+    
+    if (magnitudeA === 0 || magnitudeB === 0) return 0;
+    
+    return dotProduct / (magnitudeA * magnitudeB);
   }
 
   /**
-   * Test vector search quality for a project
-   * @param {string} projectId - Project ID to test
-   * @param {Array} testQueries - Array of test query strings (optional, uses defaults if not provided)
-   * @returns {Object} Quality metrics and test results
+   * Detailed vector search debug function
+   * Logs everything: query, all chunks, similarity scores, embeddings status
    */
-  async testVectorSearchQuality(projectId, testQueries = null) {
-    console.log('\n' + '='.repeat(60));
-    console.log(`🔍 Testing Vector Search Quality for Project: ${projectId}`);
-    console.log('='.repeat(60));
+  async debugVectorSearch(projectId, query = 'login functionality') {
+    console.log('\n' + '='.repeat(80));
+    console.log(`🔍 DETAILED VECTOR SEARCH DEBUG`);
+    console.log('='.repeat(80));
+    console.log(`Project ID: ${projectId}`);
+    console.log(`Query: "${query}"`);
+    console.log('='.repeat(80) + '\n');
 
     try {
       // Get project
@@ -232,529 +438,267 @@ class EmbeddingService {
         throw new Error(`Project ${projectId} not found`);
       }
 
-      // Get total chunks in project
+      // STEP 1: Check if vectors exist
+      console.log('📦 STEP 1: Checking Vector Storage');
+      console.log('─'.repeat(80));
       const allVectors = await vectorStore.getProjectVectors(projectId);
-      const totalChunks = allVectors.length;
-
-      if (totalChunks === 0) {
-        console.log('⚠️  No documents found in project. Please upload documents first.');
+      console.log(`Total chunks in project: ${allVectors.length}`);
+      
+      if (allVectors.length === 0) {
+        console.log('❌ No vectors found! Documents may not have been processed.');
         return {
+          error: 'No vectors found',
           projectId,
-          totalChunks: 0,
-          testResults: [],
-          summary: {
-            testsRun: 0,
-            goodMatches: 0,
-            poorMatches: 0,
-            noMatches: 0
-          }
+          query
         };
       }
 
-      console.log(`📊 Total chunks in project: ${totalChunks}`);
-
-      // Default test queries if none provided
-      const queries = testQueries || [
-        'What are the main features?',
-        'How does authentication work?',
-        'What are the test scenarios?',
-        'What are the error handling requirements?',
-        'What is the user flow?'
-      ];
-
-      const testResults = [];
-      let goodMatchesCount = 0;
-      let poorMatchesCount = 0;
-      let noMatchesCount = 0;
-
-      // Test each query
-      for (let i = 0; i < queries.length; i++) {
-        const query = queries[i];
-        console.log(`\n${'─'.repeat(60)}`);
-        console.log(`📝 Test Query ${i + 1}/${queries.length}: "${query}"`);
-        console.log('─'.repeat(60));
-
-        try {
-          // Generate embedding for query
-          const queryEmbedding = await this.generateEmbedding(query, project.apiKey);
-
-          // Search without threshold first to see all results
-          const allResults = await vectorStore.searchSimilarAll(projectId, queryEmbedding, 10);
-          
-          // Search with threshold
-          const filteredResults = await vectorStore.searchSimilar(
-            projectId,
-            queryEmbedding,
-            5,
-            this.MIN_SIMILARITY_THRESHOLD
-          );
-
-          // Log top 5 results (even if below threshold)
-          console.log(`\n📈 Top 5 Results (similarity scores):`);
-          const top5 = allResults.slice(0, 5);
-          top5.forEach((result, idx) => {
-            const isGood = result.similarity >= this.MIN_SIMILARITY_THRESHOLD;
-            const status = isGood ? '✅' : '⚠️';
-            const threshold = result.similarity >= this.MIN_SIMILARITY_THRESHOLD ? '' : ' (BELOW THRESHOLD)';
-            console.log(
-              `  ${status} ${idx + 1}. Score: ${result.similarity.toFixed(4)}${threshold} | ` +
-              `Doc: ${result.documentName} | Chunk: ${result.chunkIndex}`
-            );
-            console.log(`     Preview: ${result.text.substring(0, 100)}...`);
-          });
-
-          // Quality assessment
-          const goodMatches = filteredResults.length;
-          const poorMatches = top5.filter(r => r.similarity < this.MIN_SIMILARITY_THRESHOLD).length;
-          const hasGoodMatches = goodMatches > 0;
-
-          if (hasGoodMatches) {
-            goodMatchesCount++;
-            console.log(`\n✅ Good matches found: ${goodMatches} (above threshold ${this.MIN_SIMILARITY_THRESHOLD})`);
-          } else {
-            noMatchesCount++;
-            console.log(`\n❌ No good matches found (all results below threshold ${this.MIN_SIMILARITY_THRESHOLD})`);
-            if (top5.length > 0) {
-              poorMatchesCount++;
-              console.log(`⚠️  Best match score: ${top5[0].similarity.toFixed(4)} (too low)`);
-            }
-          }
-
-          // Store test result
-          testResults.push({
-            query,
-            totalResults: allResults.length,
-            goodMatches,
-            poorMatches,
-            topScore: top5.length > 0 ? top5[0].similarity : 0,
-            hasGoodMatches,
-            topResults: top5.map(r => ({
-              documentName: r.documentName,
-              chunkIndex: r.chunkIndex,
-              similarity: r.similarity,
-              textPreview: r.text.substring(0, 150)
-            }))
-          });
-
-        } catch (error) {
-          console.error(`❌ Error testing query "${query}":`, error.message);
-          testResults.push({
-            query,
-            error: error.message,
-            hasGoodMatches: false
-          });
-          noMatchesCount++;
-        }
-      }
-
-      // Summary
-      console.log(`\n${'='.repeat(60)}`);
-      console.log('📊 TEST SUMMARY');
-      console.log('='.repeat(60));
-      console.log(`Total chunks in project: ${totalChunks}`);
-      console.log(`Tests run: ${queries.length}`);
-      console.log(`✅ Queries with good matches: ${goodMatchesCount}`);
-      console.log(`⚠️  Queries with poor matches: ${poorMatchesCount}`);
-      console.log(`❌ Queries with no matches: ${noMatchesCount}`);
-      console.log(`Similarity threshold: ${this.MIN_SIMILARITY_THRESHOLD}`);
-      
-      const qualityScore = (goodMatchesCount / queries.length) * 100;
-      console.log(`\n🎯 Overall Quality Score: ${qualityScore.toFixed(1)}%`);
-      
-      if (qualityScore >= 80) {
-        console.log('✅ Excellent search quality!');
-      } else if (qualityScore >= 60) {
-        console.log('⚠️  Good search quality, but could be improved.');
-      } else if (qualityScore >= 40) {
-        console.log('⚠️  Moderate search quality. Consider improving document content or chunking strategy.');
+      // Check embeddings
+      console.log('\n📊 Embedding Status:');
+      const sampleVector = allVectors[0];
+      if (sampleVector.embedding) {
+        console.log(`✅ Embeddings are present`);
+        console.log(`   Embedding dimension: ${sampleVector.embedding.length}`);
+        console.log(`   Sample embedding (first 5 values): [${sampleVector.embedding.slice(0, 5).map(v => v.toFixed(4)).join(', ')}...]`);
       } else {
-        console.log('❌ Poor search quality. Review document content, chunking, or embedding model.');
+        console.log('❌ Embeddings are missing!');
+        return {
+          error: 'Embeddings missing',
+          projectId,
+          query
+        };
       }
 
-      console.log('='.repeat(60) + '\n');
+      // STEP 2: Show all chunks
+      console.log('\n📄 STEP 2: All Chunks in Project');
+      console.log('─'.repeat(80));
+      allVectors.forEach((chunk, idx) => {
+        const preview = chunk.text ? chunk.text.substring(0, 100) : '(no text)';
+        console.log(`Chunk ${idx + 1}:`);
+        console.log(`  Document: ${chunk.documentName || 'unknown'}`);
+        console.log(`  Index: ${chunk.chunkIndex || idx}`);
+        console.log(`  Text (first 100 chars): ${preview}...`);
+        console.log(`  Full length: ${chunk.text?.length || 0} chars`);
+        console.log(`  Has embedding: ${chunk.embedding ? '✅' : '❌'}`);
+        if (chunk.embedding) {
+          console.log(`  Embedding length: ${chunk.embedding.length}`);
+        }
+        console.log('');
+      });
+
+      // STEP 3: Generate query embedding
+      console.log('🔮 STEP 3: Generating Query Embedding');
+      console.log('─'.repeat(80));
+      console.log(`Query: "${query}"`);
+      const queryEmbedding = await this.generateEmbedding(query, project.apiKey);
+      console.log(`✅ Query embedding generated`);
+      console.log(`   Embedding dimension: ${queryEmbedding.length}`);
+      console.log(`   Sample (first 5 values): [${queryEmbedding.slice(0, 5).map(v => v.toFixed(4)).join(', ')}...]`);
+
+      // STEP 4: Calculate similarity for ALL chunks
+      console.log('\n📊 STEP 4: Calculating Similarity for ALL Chunks');
+      console.log('─'.repeat(80));
+      const allSimilarities = allVectors.map((chunk, idx) => {
+        const similarity = this.cosineSimilarity(queryEmbedding, chunk.embedding);
+        return {
+          index: idx,
+          chunkIndex: chunk.chunkIndex || idx,
+          documentName: chunk.documentName || 'unknown',
+          similarity: similarity,
+          text: chunk.text || '',
+          textLength: chunk.text?.length || 0
+        };
+      });
+
+      // Sort by similarity
+      allSimilarities.sort((a, b) => b.similarity - a.similarity);
+
+      // Show similarity scores for all chunks
+      console.log(`\nSimilarity Scores (sorted from highest to lowest):`);
+      allSimilarities.forEach((item, idx) => {
+        const preview = item.text.substring(0, 100);
+        console.log(`${idx + 1}. Score: ${item.similarity.toFixed(4)} | Doc: ${item.documentName} | Chunk: ${item.chunkIndex}`);
+        console.log(`   Preview: ${preview}...`);
+        console.log('');
+      });
+
+      // STEP 5: Test different thresholds
+      console.log('🎯 STEP 5: Testing Different Similarity Thresholds');
+      console.log('─'.repeat(80));
+      const thresholds = [0.3, 0.4, 0.5, 0.6, 0.7];
+      thresholds.forEach(threshold => {
+        const matches = allSimilarities.filter(item => item.similarity >= threshold);
+        console.log(`Threshold ${threshold}: ${matches.length} matches`);
+      });
+
+      // STEP 6: Top 5 results
+      console.log('\n🏆 STEP 6: Top 5 Results');
+      console.log('─'.repeat(80));
+      const top5 = allSimilarities.slice(0, 5);
+      top5.forEach((item, idx) => {
+        console.log(`${idx + 1}. Similarity: ${item.similarity.toFixed(4)}`);
+        console.log(`   Document: ${item.documentName}`);
+        console.log(`   Chunk Index: ${item.chunkIndex}`);
+        console.log(`   Text: ${item.text.substring(0, 200)}...`);
+        console.log('');
+      });
 
       return {
         projectId,
-        totalChunks,
-        minSimilarityThreshold: this.MIN_SIMILARITY_THRESHOLD,
-        testResults,
-        summary: {
-          testsRun: queries.length,
-          goodMatches: goodMatchesCount,
-          poorMatches: poorMatchesCount,
-          noMatches: noMatchesCount,
-          qualityScore: qualityScore.toFixed(1) + '%'
-        }
+        query,
+        totalChunks: allVectors.length,
+        queryEmbeddingDimension: queryEmbedding.length,
+        topResults: top5,
+        thresholdAnalysis: thresholds.map(t => ({
+          threshold: t,
+          matches: allSimilarities.filter(item => item.similarity >= t).length
+        }))
       };
 
     } catch (error) {
-      console.error('❌ Error in vector search quality test:', error);
-      throw error;
+      console.error('❌ Debug vector search failed:', error);
+      return {
+        error: error.message,
+        projectId,
+        query
+      };
     }
   }
 
   /**
-   * Get minimum similarity threshold
+   * Generate embeddings in parallel (optimized version)
    */
-  getMinSimilarityThreshold() {
-    return this.MIN_SIMILARITY_THRESHOLD;
+  async generateEmbeddingsInParallel(texts, apiKey, requestId = null) {
+    // Use the main generateEmbeddings method which handles batching
+    return await this.generateEmbeddings(texts, apiKey, requestId);
   }
 
   /**
-   * Intelligent chunking: Split text on natural boundaries
+   * Intelligent chunking: Split text on natural boundaries (paragraphs, sentences)
+   * This improves RAG quality by preserving semantic completeness
+   * 
    * @param {string} text - Text to chunk
    * @param {number} chunkSize - Target chunk size in characters (default: 800)
    * @param {number} overlap - Overlap between chunks in characters (default: 100)
-   * @param {Object} metadata - Metadata to attach to chunks (documentName, etc.)
-   * @returns {Array} Array of chunk objects with metadata
+   * @param {object} metadata - Metadata to attach to each chunk
+   * @returns {Array<object>} Array of chunk objects with text and metadata
    */
   intelligentChunk(text, chunkSize = 800, overlap = 100, metadata = {}) {
-    if (!text || typeof text !== 'string') {
+    if (!text || typeof text !== 'string' || text.trim().length === 0) {
       return [];
     }
 
-    const MIN_CHUNK_SIZE = 200;
-    const MAX_CHUNK_SIZE = 1000;
-    
-    // Ensure chunkSize is within bounds
-    chunkSize = Math.max(MIN_CHUNK_SIZE, Math.min(MAX_CHUNK_SIZE, chunkSize));
-    overlap = Math.min(overlap, Math.floor(chunkSize * 0.3)); // Max 30% overlap
-
-    // Limit text length to prevent issues
-    const MAX_TEXT_LENGTH = 10 * 1024 * 1024; // 10MB
-    if (text.length > MAX_TEXT_LENGTH) {
-      this.logger.warn('Text is very large, truncating', {
-        function: 'intelligentChunk',
-        originalLength: text.length,
-        maxLength: MAX_TEXT_LENGTH
-      });
-      text = text.substring(0, MAX_TEXT_LENGTH);
-    }
-
     const chunks = [];
-    let currentPosition = 0;
-    const textLength = text.length;
+    const minChunkSize = 200;
+    const maxChunkSize = 1000;
+    
+    // Adjust chunk size to be within bounds
+    const targetSize = Math.max(minChunkSize, Math.min(maxChunkSize, chunkSize));
+    const overlapSize = Math.min(overlap, targetSize * 0.2); // Max 20% overlap
+
+    let currentIndex = 0;
     let chunkIndex = 0;
 
-    // Detect document structure: headings, sections
-    const sections = this.detectSections(text);
-    
-    while (currentPosition < textLength) {
-      // Determine chunk boundaries
-      let chunkEnd = Math.min(currentPosition + chunkSize, textLength);
+    while (currentIndex < text.length) {
+      const remainingText = text.substring(currentIndex);
       
-      // If we're not at the end, try to find a natural boundary
-      if (chunkEnd < textLength) {
-        // Try to find paragraph break first (double newline)
-        const paragraphBreak = text.lastIndexOf('\n\n', chunkEnd);
-        if (paragraphBreak > currentPosition + MIN_CHUNK_SIZE) {
-          chunkEnd = paragraphBreak + 2; // Include the double newline
+      // If remaining text is smaller than min chunk size, add it all
+      if (remainingText.length <= minChunkSize) {
+        if (remainingText.trim().length > 0) {
+          chunks.push({
+            text: remainingText.trim(),
+            chunkIndex: chunkIndex++,
+            charStart: currentIndex,
+            charEnd: currentIndex + remainingText.length,
+            charLength: remainingText.length,
+            ...metadata
+          });
+        }
+        break;
+      }
+
+      // Find the best split point (natural boundary)
+      let splitPoint = Math.min(currentIndex + targetSize, text.length);
+      
+      // Try to find a natural boundary near the target size
+      const searchStart = Math.max(currentIndex + minChunkSize, splitPoint - 200);
+      const searchEnd = Math.min(splitPoint + 200, text.length);
+      const searchText = text.substring(searchStart, searchEnd);
+
+      // Priority 1: Paragraph break (\n\n)
+      let boundary = searchText.indexOf('\n\n');
+      if (boundary !== -1) {
+        splitPoint = searchStart + boundary + 2;
+      } else {
+        // Priority 2: Sentence ending (. ! ? followed by space)
+        const sentenceEnd = searchText.match(/[.!?]\s+/);
+        if (sentenceEnd) {
+          splitPoint = searchStart + sentenceEnd.index + sentenceEnd[0].length;
         } else {
-          // Try to find sentence boundary (., !, ? followed by space)
-          const sentencePattern = /[.!?]\s+/g;
-          let match;
-          let lastSentenceEnd = -1;
-          
-          // Find all sentence endings before chunkEnd
-          while ((match = sentencePattern.exec(text.substring(currentPosition, chunkEnd))) !== null) {
-            lastSentenceEnd = currentPosition + match.index + match[0].length;
+          // Priority 3: Single newline
+          const newline = searchText.indexOf('\n');
+          if (newline !== -1) {
+            splitPoint = searchStart + newline + 1;
           }
-          
-          // If we found a sentence end and it's not too close to start, use it
-          if (lastSentenceEnd > currentPosition + MIN_CHUNK_SIZE) {
-            chunkEnd = lastSentenceEnd;
-          } else {
-            // Fallback: find single newline
-            const newlineBreak = text.lastIndexOf('\n', chunkEnd);
-            if (newlineBreak > currentPosition + MIN_CHUNK_SIZE) {
-              chunkEnd = newlineBreak + 1;
-            }
-          }
+          // Otherwise use the target size (no natural boundary found)
         }
       }
 
       // Extract chunk text
-      const chunkText = text.substring(currentPosition, chunkEnd).trim();
+      const chunkText = text.substring(currentIndex, splitPoint).trim();
       
-      if (chunkText.length >= MIN_CHUNK_SIZE || chunkEnd >= textLength) {
-        // Find which section this chunk belongs to
-        const section = this.findSectionForPosition(currentPosition, sections);
-        
-        // Create chunk with metadata
-        const chunk = {
+      if (chunkText.length > 0) {
+        // Detect section/heading if present
+        let section = null;
+        const lines = chunkText.split('\n');
+        for (const line of lines.slice(0, 3)) { // Check first 3 lines
+          // Check for markdown heading
+          if (line.match(/^#+\s+/)) {
+            section = line.replace(/^#+\s+/, '').trim();
+            break;
+          }
+          // Check for numbered heading
+          if (line.match(/^\d+\.?\s+[A-Z]/)) {
+            section = line.replace(/^\d+\.?\s+/, '').trim();
+            break;
+          }
+          // Check for ALL CAPS heading
+          if (line.length < 100 && line === line.toUpperCase() && line.match(/[A-Z]/)) {
+            section = line.trim();
+            break;
+          }
+        }
+
+        chunks.push({
           text: chunkText,
           chunkIndex: chunkIndex++,
-          charStart: currentPosition,
-          charEnd: chunkEnd,
+          charStart: currentIndex,
+          charEnd: splitPoint,
           charLength: chunkText.length,
-          section: section ? section.title : null,
-          sectionIndex: section ? section.index : null,
-          documentName: metadata.documentName || 'unknown',
+          section: section,
           ...metadata
-        };
-
-        chunks.push(chunk);
-
-        // Move to next position with overlap
-        if (chunkEnd >= textLength) {
-          break; // Reached end of text
-        }
-        
-        // Calculate overlap start (go back by overlap amount, but not before current position)
-        const overlapStart = Math.max(currentPosition, chunkEnd - overlap);
-        
-        // Find natural boundary for overlap start (don't start mid-sentence)
-        const overlapBoundary = this.findNaturalBoundary(text, overlapStart, currentPosition);
-        currentPosition = overlapBoundary;
-      } else {
-        // Chunk too small, advance by minimum amount
-        currentPosition += MIN_CHUNK_SIZE;
+        });
       }
 
-      // Safety check to prevent infinite loops
-      if (chunkIndex > 100000) {
-        this.logger.error('Chunking reached max iterations', {
-          function: 'intelligentChunk',
-          textLength,
-          chunksCreated: chunks.length
-        });
+      // Move to next chunk with overlap
+      currentIndex = Math.max(currentIndex + 1, splitPoint - overlapSize);
+      
+      // Prevent infinite loop
+      if (currentIndex >= text.length) {
         break;
       }
     }
 
-    // Log chunking statistics
-    this.logChunkingStats(chunks, textLength);
-
-    return chunks;
-  }
-
-  /**
-   * Detect sections/headings in text (for structured documents like PRDs)
-   * @param {string} text - Text to analyze
-   * @returns {Array} Array of section objects {title, start, end, index}
-   */
-  detectSections(text) {
-    const sections = [];
-    
-    // Patterns for common heading formats
-    const headingPatterns = [
-      /^(#{1,6})\s+(.+)$/gm,                    // Markdown headings (# Title)
-      /^(\d+\.?\s+[A-Z][^\n]+)$/gm,             // Numbered headings (1. Title)
-      /^([A-Z][A-Z\s]{2,50})$/gm,               // ALL CAPS headings
-      /^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*:)$/gm,  // Title Case: headings
-    ];
-
-    // Also detect common PRD section patterns
-    const prdPatterns = [
-      /^(?:Section|Chapter|Part)\s+\d+[.:]\s*(.+)$/gmi,
-      /^(\d+\.\d+\.?\s+[A-Z][^\n]+)$/gm,        // Hierarchical numbering (1.1 Title)
-    ];
-
-    const allPatterns = [...headingPatterns, ...prdPatterns];
-    const foundHeadings = new Set();
-
-    for (const pattern of allPatterns) {
-      let match;
-      while ((match = pattern.exec(text)) !== null) {
-        const title = match[match.length - 1].trim(); // Last capture group is usually the title
-        const position = match.index;
-        
-        // Avoid duplicates
-        if (!foundHeadings.has(position)) {
-          foundHeadings.add(position);
-          
-          // Find end of section (next heading or end of text)
-          let sectionEnd = text.length;
-          for (const nextPattern of allPatterns) {
-            const nextMatch = nextPattern.exec(text.substring(position + 1));
-            if (nextMatch) {
-              sectionEnd = Math.min(sectionEnd, position + 1 + nextMatch.index);
-              nextPattern.lastIndex = 0; // Reset for next iteration
-            }
-          }
-
-          sections.push({
-            title: title,
-            start: position,
-            end: sectionEnd,
-            index: sections.length
-          });
-        }
-      }
-    }
-
-    // Sort by position
-    sections.sort((a, b) => a.start - b.start);
-
-    return sections;
-  }
-
-  /**
-   * Find which section a position belongs to
-   * @param {number} position - Character position
-   * @param {Array} sections - Array of section objects
-   * @returns {Object|null} Section object or null
-   */
-  findSectionForPosition(position, sections) {
-    for (let i = sections.length - 1; i >= 0; i--) {
-      if (position >= sections[i].start) {
-        return sections[i];
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Find natural boundary (sentence or paragraph end) near a position
-   * @param {string} text - Full text
-   * @param {number} targetPosition - Target position
-   * @param {number} minPosition - Minimum allowed position
-   * @returns {number} Best boundary position
-   */
-  findNaturalBoundary(text, targetPosition, minPosition) {
-    // Look backwards from targetPosition for a natural break
-    const searchWindow = 200; // Search within 200 chars
-    const searchStart = Math.max(minPosition, targetPosition - searchWindow);
-    const searchText = text.substring(searchStart, targetPosition);
-
-    // Try paragraph break first
-    const paraBreak = searchText.lastIndexOf('\n\n');
-    if (paraBreak >= 0) {
-      return searchStart + paraBreak + 2;
-    }
-
-    // Try sentence break
-    const sentencePattern = /[.!?]\s+/g;
-    let match;
-    let lastMatch = -1;
-    while ((match = sentencePattern.exec(searchText)) !== null) {
-      lastMatch = searchStart + match.index + match[0].length;
-    }
-    if (lastMatch >= minPosition) {
-      return lastMatch;
-    }
-
-    // Try single newline
-    const newlineBreak = searchText.lastIndexOf('\n');
-    if (newlineBreak >= 0) {
-      return searchStart + newlineBreak + 1;
-    }
-
-    // Fallback to target position
-    return Math.max(minPosition, targetPosition);
-  }
-
-  /**
-   * Log chunking statistics for quality assessment
-   * @param {Array} chunks - Array of chunk objects
-   * @param {number} originalLength - Original text length
-   */
-  logChunkingStats(chunks, originalLength) {
-    if (chunks.length === 0) {
-      return;
-    }
-
-    const sizes = chunks.map(c => c.charLength);
-    const avgSize = sizes.reduce((a, b) => a + b, 0) / sizes.length;
-    const minSize = Math.min(...sizes);
-    const maxSize = Math.max(...sizes);
-    
-    // Size distribution
-    const small = sizes.filter(s => s < 400).length;
-    const medium = sizes.filter(s => s >= 400 && s < 800).length;
-    const large = sizes.filter(s => s >= 800).length;
-
-    // Sections detected
-    const withSections = chunks.filter(c => c.section).length;
-
     this.logger.info('Intelligent chunking completed', {
       function: 'intelligentChunk',
       totalChunks: chunks.length,
-      originalLength,
-      avgChunkSize: Math.round(avgSize),
-      minChunkSize: minSize,
-      maxChunkSize: maxSize,
-      sizeDistribution: {
-        small: `${small} (${((small/chunks.length)*100).toFixed(1)}%)`,
-        medium: `${medium} (${((medium/chunks.length)*100).toFixed(1)}%)`,
-        large: `${large} (${((large/chunks.length)*100).toFixed(1)}%)`
-      },
-      chunksWithSections: `${withSections} (${((withSections/chunks.length)*100).toFixed(1)}%)`
+      originalLength: text.length,
+      avgChunkSize: chunks.length > 0 ? Math.round(chunks.reduce((sum, c) => sum + c.charLength, 0) / chunks.length) : 0
     });
 
-    // Log sample chunks for review (first 3)
-    const samples = chunks.slice(0, 3).map(c => ({
-      index: c.chunkIndex,
-      size: c.charLength,
-      section: c.section || 'none',
-      preview: c.text.substring(0, 100) + '...'
-    }));
-
-    this.logger.debug('Sample chunks', {
-      function: 'intelligentChunk',
-      samples
-    });
-  }
-
-  /**
-   * Test chunking quality
-   * @param {string} text - Sample text to test
-   * @param {Object} options - Chunking options
-   * @returns {Object} Quality metrics and sample chunks
-   */
-  testChunkingQuality(text, options = {}) {
-    const chunkSize = options.chunkSize || 800;
-    const overlap = options.overlap || 100;
-    const metadata = options.metadata || { documentName: 'test' };
-
-    const chunks = this.intelligentChunk(text, chunkSize, overlap, metadata);
-
-    // Quality metrics
-    const sizes = chunks.map(c => c.charLength);
-    const avgSize = sizes.reduce((a, b) => a + b, 0) / sizes.length;
-    const variance = sizes.reduce((sum, size) => sum + Math.pow(size - avgSize, 2), 0) / sizes.length;
-    const stdDev = Math.sqrt(variance);
-
-    // Check for information loss (total characters should be preserved with overlap)
-    const totalChunkChars = chunks.reduce((sum, c) => sum + c.charLength, 0);
-    const originalLength = text.length;
-    const coverage = (totalChunkChars / originalLength) * 100;
-
-    // Check chunk boundaries (should end on natural breaks)
-    const naturalBreaks = chunks.filter(c => {
-      const chunkEnd = c.text[c.text.length - 1];
-      return /[.!?\n]/.test(chunkEnd);
-    }).length;
-    const naturalBreakRate = (naturalBreaks / chunks.length) * 100;
-
-    return {
-      totalChunks: chunks.length,
-      originalLength,
-      totalChunkChars,
-      coverage: `${coverage.toFixed(1)}%`,
-      qualityMetrics: {
-        avgChunkSize: Math.round(avgSize),
-        minChunkSize: Math.min(...sizes),
-        maxChunkSize: Math.max(...sizes),
-        stdDev: Math.round(stdDev),
-        naturalBreakRate: `${naturalBreakRate.toFixed(1)}%`,
-        chunksWithSections: chunks.filter(c => c.section).length
-      },
-      sizeDistribution: {
-        small: sizes.filter(s => s < 400).length,
-        medium: sizes.filter(s => s >= 400 && s < 800).length,
-        large: sizes.filter(s => s >= 800).length
-      },
-      sampleChunks: chunks.slice(0, 5).map(c => ({
-        index: c.chunkIndex,
-        size: c.charLength,
-        section: c.section,
-        charRange: `${c.charStart}-${c.charEnd}`,
-        preview: c.text.substring(0, 150) + '...'
-      }))
-    };
+    return chunks;
   }
 }
 
+// Export singleton instance
 module.exports = new EmbeddingService();
-

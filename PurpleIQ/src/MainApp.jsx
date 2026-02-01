@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import './MainApp.css'
 
 /**
@@ -23,6 +23,26 @@ function MainApp() {
   
   // State for selected output format
   const [outputFormat, setOutputFormat] = useState('')
+  
+  // State for typewriter effect
+  const [displayedOutput, setDisplayedOutput] = useState('')
+  const [isTyping, setIsTyping] = useState(false)
+  const typingTimeoutRef = useRef(null)
+  const outputEndRef = useRef(null)
+
+  // Auto-scroll to bottom during typing
+  useEffect(() => {
+    outputEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [displayedOutput])
+
+  // Cleanup typing timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current)
+      }
+    }
+  }, [])
 
   /**
    * Handle form submission
@@ -40,7 +60,14 @@ function MainApp() {
     // Reset states
     setError('')
     setOutput('')
+    setDisplayedOutput('')
+    setIsTyping(false)
     setIsLoading(true)
+    
+    // Clear any existing typing timeout
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current)
+    }
 
     try {
       // Map UI mode labels to API mode values
@@ -73,15 +100,40 @@ function MainApp() {
 
       // Parse response
       const data = await response.json()
+      const fullOutput = data.output || 'No output received'
       
-      // Set output
-      setOutput(data.output || 'No output received')
+      // Stop loading, start typing effect
+      setIsLoading(false)
+      setOutput(fullOutput)
+      setIsTyping(true)
+      setDisplayedOutput('')
+      
+      // Typewriter effect: display word by word
+      const words = fullOutput.split(' ')
+      let currentIndex = 0
+      
+      const typeWord = () => {
+        if (currentIndex < words.length) {
+          setDisplayedOutput(prev => {
+            const newText = prev + (prev ? ' ' : '') + words[currentIndex]
+            return newText
+          })
+          currentIndex++
+          typingTimeoutRef.current = setTimeout(typeWord, 30) // 30ms per word for faster typing
+        } else {
+          // Typing complete
+          setIsTyping(false)
+        }
+      }
+      
+      typeWord()
       
     } catch (err) {
       console.error('Error generating content:', err)
       setError(err.message || 'Failed to generate content. Please try again.')
       setOutput('')
-    } finally {
+      setDisplayedOutput('')
+      setIsTyping(false)
       setIsLoading(false)
     }
   }
@@ -200,16 +252,52 @@ function MainApp() {
         {/* Right Column - Output Section */}
         <div className="main-right-panel">
           <div className="main-output-section">
-            <h2 className="main-output-title">Generated Output</h2>
+            <h2 className="main-output-title">
+              Generated Output
+              {isLoading && <span className="main-generating-badge">Generating...</span>}
+              {isTyping && <span className="main-typing-badge">✨ AI Writing...</span>}
+            </h2>
             <div className="main-output-content">
-              {output ? (
-                output.split('\n').map((line, index) => (
-                  <p key={index} className="main-output-line">
-                    {line || '\u00A0'}
-                  </p>
-                ))
+              {isLoading ? (
+                <div className="main-loading-state">
+                  <div className="main-loading-spinner"></div>
+                  <p className="main-loading-text">AI is thinking and generating your content...</p>
+                  <p className="main-loading-hint">This may take a few moments</p>
+                </div>
+              ) : displayedOutput || output ? (
+                <div className="main-formatted-output">
+                  {(displayedOutput || output).split('\n').map((line, index) => {
+                    // Format markdown-style content
+                    if (line.startsWith('###')) {
+                      return <h3 key={index} className="output-h3">{line.replace(/^###\s*/, '')}</h3>
+                    } else if (line.startsWith('##')) {
+                      return <h2 key={index} className="output-h2">{line.replace(/^##\s*/, '')}</h2>
+                    } else if (line.startsWith('#')) {
+                      return <h1 key={index} className="output-h1">{line.replace(/^#\s*/, '')}</h1>
+                    } else if (line.startsWith('**') && line.endsWith('**')) {
+                      return <p key={index} className="output-bold">{line.replace(/\*\*/g, '')}</p>
+                    } else if (line.startsWith('- ') || line.startsWith('* ')) {
+                      return <li key={index} className="output-list-item">{line.replace(/^[-*]\s*/, '')}</li>
+                    } else if (line.match(/^\d+\./)) {
+                      return <li key={index} className="output-numbered-item">{line.replace(/^\d+\.\s*/, '')}</li>
+                    } else if (line.startsWith('---')) {
+                      return <hr key={index} className="output-divider" />
+                    } else if (line.trim() === '') {
+                      return <div key={index} className="output-spacer"></div>
+                    } else {
+                      // Format inline bold text **text**
+                      const formattedLine = line.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                      return (
+                        <p key={index} className="main-output-line" dangerouslySetInnerHTML={{ __html: formattedLine }} />
+                      )
+                    }
+                  })}
+                  {isTyping && <span className="typing-cursor-blink">|</span>}
+                  <div ref={outputEndRef} />
+                </div>
               ) : (
                 <div className="main-output-placeholder">
+                  <div className="placeholder-icon">✨</div>
                   <p>Your generated content will appear here...</p>
                   <p className="main-placeholder-hint">Select a mode, enter your input, and click Generate to get started.</p>
                 </div>

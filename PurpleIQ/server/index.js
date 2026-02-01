@@ -3,6 +3,7 @@ const cors = require('cors');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { v4: uuidv4 } = require('uuid');
 const { createRequestLogger, sanitizeMetadata } = require('./utils/logger');
+const aiService = require('./services/AIService');
 require('dotenv').config();
 
 // Initialize Express app
@@ -18,88 +19,39 @@ if (!USE_MOCK_AI) {
   genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 }
 
-// Gemini model fallback list (in order of preference)
-// These models are verified to be available via API as of Jan 2026
-const GEMINI_MODELS = [
-  'gemini-2.5-flash',      // Primary model (latest, fast, recommended)
-  'gemini-2.0-flash',      // Fallback 1 (stable)
-  'gemini-2.5-pro'         // Fallback 2 (most capable, slower)
-];
+// Using ONLY gemini-2.5-flash for fastest generation (no fallback retries)
+const GEMINI_MODEL = 'gemini-2.5-flash';
 
 /**
- * Generate content with Gemini using fallback models and retry logic
+ * Generate content with Gemini using ONLY gemini-2.5-flash (no retries for speed)
  * @param {string} prompt - The prompt to send
- * @param {number} maxRetries - Maximum number of retries per model
  * @returns {Promise<{result: any, usedModel: string}>}
  */
-async function generateWithGeminiFallback(prompt, maxRetries = 3) {
+async function generateWithGemini(prompt) {
   if (!genAI) {
     throw new Error('Gemini client not initialized');
   }
 
-  const errors = [];
-  
-  for (const modelName of GEMINI_MODELS) {
-    let lastError = null;
+  try {
+    console.log(`🔄 Trying model: ${GEMINI_MODEL}`);
+    const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
+    const result = await model.generateContent(prompt);
     
-    // Retry logic with exponential backoff for each model
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      try {
-        const delay = attempt > 0 ? Math.min(1000 * Math.pow(2, attempt - 1), 10000) : 0;
-        
-        if (delay > 0) {
-          console.log(`⏳ Retrying ${modelName} after ${delay}ms (attempt ${attempt + 1}/${maxRetries})...`);
-          await new Promise(resolve => setTimeout(resolve, delay));
-        }
-        
-        console.log(`🔄 Trying model: ${modelName}${attempt > 0 ? ` (retry ${attempt + 1})` : ''}`);
-        const model = genAI.getGenerativeModel({ model: modelName });
-        const result = await model.generateContent(prompt);
-        
-        console.log(`✅ Successfully used model: ${modelName}`);
-        return { result, usedModel: modelName };
-        
-      } catch (error) {
-        lastError = error;
-        const errorMsg = error.message || String(error);
-        
-        // Log the error
-        if (attempt === 0) {
-          console.log(`❌ ${modelName} failed: ${errorMsg}`);
-        } else {
-          console.log(`❌ ${modelName} retry ${attempt + 1} failed: ${errorMsg}`);
-        }
-        
-        errors.push({ model: modelName, attempt: attempt + 1, error: errorMsg });
-        
-        // If it's a model not found error, don't retry this model
-        if (errorMsg.includes('not found') || errorMsg.includes('404')) {
-          console.log(`⏭️  Skipping ${modelName} (model not available)`);
-          break;
-        }
-        
-        // For other errors, continue retrying
-        if (attempt < maxRetries - 1) {
-          continue;
-        }
-      }
-    }
+    console.log(`✅ Successfully used model: ${GEMINI_MODEL}`);
+    return { result, usedModel: GEMINI_MODEL };
+  } catch (error) {
+    const errorMsg = error.message || String(error);
+    console.error(`❌ ${GEMINI_MODEL} failed:`, errorMsg);
     
-    // If we exhausted retries for this model, log and try next
-    if (lastError) {
-      console.log(`⚠️  Exhausted retries for ${modelName}, trying next model...`);
+    // Provide helpful error message
+    if (errorMsg.includes('429') || errorMsg.includes('quota') || errorMsg.includes('rate limit')) {
+      throw new Error(`Rate limit exceeded. Please try again in a few moments.`);
+    } else if (errorMsg.includes('not found') || errorMsg.includes('404')) {
+      throw new Error(`Model ${GEMINI_MODEL} not available. Please check your API key.`);
+    } else {
+      throw new Error(`AI generation failed: ${errorMsg}`);
     }
   }
-  
-  // All models failed
-  const triedModels = GEMINI_MODELS.join(', ');
-  const errorSummary = errors.map(e => `${e.model} (attempt ${e.attempt}): ${e.error}`).join('; ');
-  
-  throw new Error(
-    `All Gemini models failed. Tried: ${triedModels}. ` +
-    `Errors: ${errorSummary}. ` +
-    `Please check your API key permissions and available models in Google AI Studio.`
-  );
 }
 
 // ========== MIDDLEWARE ==========
@@ -156,9 +108,113 @@ const logsRouter = require('./routes/logs');
 
 app.use('/api/projects', projectsRouter);
 app.use('/api/chat', chatRouter);
+
+// Rate limit status endpoint (for demo reliability monitoring)
+app.get('/api/rate-limit-status', (req, res) => {
+  try {
+    const status = aiService.getRateLimitStatus();
+    const failoverStats = aiService.getFailoverStats();
+    res.json({
+      success: true,
+      ...status,
+      failoverStats: {
+        today: failoverStats.todayFailovers,
+        total: failoverStats.totalFailovers,
+        lastFailover: failoverStats.lastFailover
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting rate limit status:', error);
+    res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Failed to retrieve rate limit status'
+    });
+  }
+});
+
+// Failover statistics endpoint
+app.get('/api/failover-stats', (req, res) => {
+  try {
+    const stats = aiService.getFailoverStats();
+    res.json({
+      success: true,
+      ...stats,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting failover stats:', error);
+    res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Failed to retrieve failover statistics'
+    });
+  }
+});
+
+// Embedding rate limit status endpoint
+app.get('/api/embedding-rate-limit-status', (req, res) => {
+  try {
+    const embeddingService = require('./services/EmbeddingService');
+    const status = embeddingService.getRateLimitStatus();
+    res.json({
+      success: true,
+      ...status,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting embedding rate limit status:', error);
+    res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Failed to retrieve embedding rate limit status'
+    });
+  }
+});
+
+/**
+ * GET /api/rate-limit-status
+ * Global rate limit status endpoint
+ */
+app.get('/api/rate-limit-status', (req, res) => {
+  try {
+    const aiService = require('./services/AIService');
+    const status = aiService.getRateLimitStatus();
+    res.json({
+      success: true,
+      ...status,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting rate limit status:', error);
+    res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Failed to retrieve rate limit status'
+    });
+  }
+});
 app.use('/api/export', exportRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/logs', logsRouter);
+
+/**
+ * GET /api/rate-limit-status
+ * Get current rate limit status and recommendations
+ */
+app.get('/api/rate-limit-status', (req, res) => {
+  try {
+    const status = aiService.getRateLimitStatus();
+    res.json({
+      success: true,
+      ...status,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error getting rate limit status:', error);
+    res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Failed to retrieve rate limit status'
+    });
+  }
+});
 
 // ========== SYSTEM PROMPT ==========
 const SYSTEM_PROMPT = `You are PurpleIQ, an AI-powered QA assistant designed to help manual and automation testers. 
@@ -561,10 +617,10 @@ app.post('/api/generate', async (req, res) => {
       const userPrompt = getModePrompt(mode, inputText);
       const fullPrompt = `${SYSTEM_PROMPT}\n\n${userPrompt}`;
 
-      // Call Google Gemini API with fallback and retry logic
+      // Call Google Gemini API (gemini-2.5-flash only)
       console.log('Calling Google Gemini API...');
       
-      const { result, usedModel } = await generateWithGeminiFallback(fullPrompt);
+      const { result, usedModel } = await generateWithGemini(fullPrompt);
       
       const response = await result.response;
       output = response.text();
@@ -643,7 +699,7 @@ app.post('/api/generate', async (req, res) => {
       
       // Classify and handle other Gemini-specific errors
       const classifiedError = AIErrors.classifyError(error, 'Gemini', { 
-        triedModels: GEMINI_MODELS 
+        triedModels: [GEMINI_MODEL] 
       });
       
       if (classifiedError instanceof AIErrors.AIServiceError) {
@@ -660,6 +716,8 @@ app.post('/api/generate', async (req, res) => {
 });
 
 // ========== HEALTH CHECK ==========
+const healthCheckService = require('./services/HealthCheckService');
+
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
@@ -667,6 +725,23 @@ app.get('/health', (req, res) => {
     service: 'PurpleIQ API',
     aiMode: USE_MOCK_AI ? 'MOCK' : 'REAL (Google Gemini)'
   });
+});
+
+// Comprehensive health check endpoint
+app.get('/api/health', async (req, res) => {
+  try {
+    const healthStatus = await healthCheckService.runAllChecks();
+    const statusCode = healthStatus.status === 'healthy' ? 200 : 
+                      healthStatus.status === 'degraded' ? 200 : 503;
+    res.status(statusCode).json(healthStatus);
+  } catch (error) {
+    console.error('Health check error:', error);
+    res.status(503).json({
+      status: 'unhealthy',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
 });
 
 // ========== ROOT ENDPOINT ==========
@@ -709,7 +784,7 @@ app.use((err, req, res, next) => {
 
 // ========== START SERVER ==========
 app.listen(PORT, () => {
-  console.log('='.repeat(50));
+  console.log('='.repeat(80));
   console.log(`🚀 PurpleIQ API Server is running`);
   console.log(`📍 Port: ${PORT}`);
   console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
@@ -718,7 +793,15 @@ app.listen(PORT, () => {
     console.log(`💡 Tip: If you hit quota limits, set USE_MOCK_AI=true in .env to use mock responses`);
     console.log(`🔑 Gemini API Key: ${process.env.GEMINI_API_KEY ? '✅ Configured' : '❌ Not configured'}`);
   }
-  console.log('='.repeat(50));
+  console.log('='.repeat(80));
+  console.log(`\n🔧 CRITICAL CONFIGURATION (to avoid OpenAI 429 errors):`);
+  console.log(`   ✅ PRIMARY: Gemini (gemini-1.5-flash) for ALL chat/generation`);
+  console.log(`   ✅ EMBEDDINGS: Gemini ONLY (OpenAI removed)`);
+  console.log(`   ✅ FALLBACK: OpenAI GPT models (if Gemini fails for chat only)`);
+  console.log(`   🚫 OpenAI embeddings: REMOVED (to prevent 429 errors)`);
+  console.log(`\n💡 New projects default to 'gemini' model`);
+  console.log(`   GEMINI_API_KEY required for embeddings`);
+  console.log('='.repeat(80));
   console.log(`Available endpoints:`);
   console.log(`  POST http://localhost:${PORT}/api/generate (legacy)`);
   console.log(`  GET  http://localhost:${PORT}/api/projects`);

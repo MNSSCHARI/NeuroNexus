@@ -1,0 +1,224 @@
+=================================================================
+🧪 QUICK TEST PROMPTS - Copy & Paste Ready
+=================================================================
+
+ULTRA-FAST TESTS (10-15 seconds, ~20-50 tokens)
+-----------------------------------------------------------------
+
+Test Cases Mode:
+- Login button
+- Search bar
+- Registration form
+- Payment page
+- User profile
+
+Automation Mode:
+- Login automation
+- Form testing
+- API testing
+- Mobile testing
+- E2E testing
+
+Analysis Mode:
+- Shopping cart
+- Checkout flow
+- User dashboard
+- Product page
+- Profile settings
+
+Summary Mode:
+- Test results: 10 passed, 2 failed
+- Sprint testing complete
+- Bug report summary
+- QA metrics review
+- Test coverage analysis
+
+FAST TESTS (15-25 seconds, ~50-100 tokens)
+-----------------------------------------------------------------
+
+Test Cases Mode:
+- Login with email and password
+- Search with filters and sort
+- User registration with validation
+- Payment with credit card
+- Profile update with photo upload
+
+Automation Mode:
+- Automate login flow with validation
+- E2E checkout process automation
+- API integration testing framework
+- Mobile responsive testing approach
+- Performance testing strategy
+
+Analysis Mode:
+- Shopping cart: add, remove, update quantities
+- Checkout: shipping, payment, confirmation
+- Dashboard: stats, graphs, notifications
+- Product: images, description, reviews
+- Settings: profile, privacy, notifications
+
+Summary Mode:
+- Sprint: 20 tests, 18 passed, 2 failed, 1 blocker
+- Module: Auth, Status: Complete, Issues: 2 medium
+- Coverage: 85%, Critical bugs: 1, Medium: 3
+- Performance: Load time 2s, API response 200ms
+- Regression: All passed, No new issues
+
+
+STANDARD TESTS (25-40 seconds, ~100-200 tokens)
+-----------------------------------------------------------------
+
+Test Cases Mode:
+User Login Feature:
+- Email field (required, valid format)
+- Password field (min 8 chars, show/hide)
+- Remember me checkbox
+- Forgot password link
+- Submit button with validation
+
+E-commerce Cart:
+- Add item with quantity selector
+- Remove item with confirmation
+- Update quantities (min 1, max 10)
+- Calculate subtotal and tax
+- Apply discount code
+- Proceed to checkout button
+
+Automation Mode:
+Login Automation Strategy:
+- Framework: Playwright + Pytest
+- Validate email format
+- Test password strength
+- Handle error messages
+- Verify session persistence
+- Test logout functionality
+
+Analysis Mode:
+User Authentication System:
+- Registration with email verification
+- Login with OAuth (Google, Facebook)
+- Password reset via email
+- Two-factor authentication (SMS, App)
+- Session management (30-min timeout)
+- Account lockout (3 failed attempts)
+
+Summary Mode:
+Sprint 5 QA Summary:
+Module: User Management
+- Test Cases: 35 total
+- Executed: 35 (100%)
+- Pass Rate: 91%
+- Failed: 3 (login timeout, profile update, logout)
+- Bugs Found: 5 (2 critical, 3 medium)
+- Blockers: 1 (payment gateway integration)
+- Recommendations: Fix critical bugs before release
+
+
+=================================================================
+💡 TIPS FOR MINIMAL TOKEN USAGE
+=================================================================
+
+1. Use Keywords Only:
+   ❌ "I need you to generate test cases for a login form"
+   ✅ "Login form"
+
+2. Bullet Points > Paragraphs:
+   ✅ "- Login\n- Logout\n- Profile"
+
+3. Remove Extra Words:
+   ❌ "Please test the following features..."
+   ✅ "Login, logout, profile"
+
+4. Focus on Essentials:
+   ✅ "Cart: add, remove, checkout"
+
+5. Abbreviate When Clear:
+   ✅ "Auth: login, register, reset pwd"
+
+
+=================================================================
+🎯 ONE-WORD TESTS (Fastest Possible)
+=================================================================
+
+Login
+Registration
+Checkout
+Search
+Profile
+Dashboard
+Cart
+Payment
+Settings
+Navigation
+Upload
+Download
+Filter
+Sort
+Pagination
+Notification
+Comments
+Reviews
+Ratings
+Messages
+
+
+=================================================================
+📊 TOKEN USAGE GUIDE
+=================================================================
+
+1-5 words:     10-30 tokens   → 10-15 seconds
+6-15 words:    30-70 tokens   → 15-25 seconds
+16-30 words:   70-150 tokens  → 25-35 seconds
+31-50 words:   150-250 tokens → 35-50 seconds
+50+ words:     250+ tokens    → 50+ seconds
+
+
+=================================================================
+🚀 RECOMMENDED FOR DEMOS
+=================================================================
+
+Quick Demo (20s total):
+1. "Login"
+2. "Shopping cart"
+3. "Checkout flow"
+
+Standard Demo (60s total):
+1. "Login with validation"
+2. "Cart: add, remove, update"
+3. "Payment with card validation"
+
+Full Demo (120s total):
+1. "User auth: login, register, reset"
+2. "E-commerce: browse, cart, checkout"
+3. "Dashboard: stats, orders, settings"
+
+
+=================================================================
+✅ READY-TO-USE COLLECTION
+=================================================================
+
+Copy any prompt below and paste into the input field:
+
+Shortest:
+- Login
+- Cart
+- Search
+
+Short:
+- Login with email
+- Add to cart
+- Search products
+
+Medium:
+- Login: email, password, validation
+- Cart: add, remove, quantities
+- Search: filters, sort, pagination
+
+Detailed:
+- Login form: email validation, password strength, remember me, error handling
+- Shopping cart: add items, update quantities, remove items, calculate total, apply discount
+- Product search: keyword search, category filters, price range, sort by relevance/price
+
+
+=================================================================
+
