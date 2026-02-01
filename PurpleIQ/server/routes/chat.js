@@ -186,6 +186,26 @@ router.post('/:projectId', async (req, res) => {
 });
 
 /**
+ * GET /api/chat/metrics
+ * Get AI self-evaluation metrics
+ */
+router.get('/metrics', async (req, res) => {
+  try {
+    const metrics = aiService.getEvaluationMetrics();
+    res.json({
+      success: true,
+      metrics: metrics
+    });
+  } catch (error) {
+    console.error('Error fetching evaluation metrics:', error);
+    res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Failed to fetch evaluation metrics'
+    });
+  }
+});
+
+/**
  * GET /api/chat/:projectId/history
  * Get conversation history for a project
  */

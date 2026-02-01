@@ -9,7 +9,9 @@
     "test": "npm run test:phase2",
     "test:phase1": "node tests/phase1-checklist.test.js",
     "test:phase2": "node tests/phase2-checklist.test.js",
-    "test:all": "npm run test:phase1 && npm run test:phase2"
+    "test:all": "npm run test:phase1 && npm run test:phase2",
+    "cleanup": "node scripts/cleanup-test-data.js",
+    "cleanup:all": "node scripts/cleanup-test-data.js --all"
   },
   "keywords": [],
   "author": "",
@@ -19,7 +21,9 @@
     "@google/generative-ai": "^0.21.0",
     "axios": "^1.13.4",
     "cors": "^2.8.6",
+    "docx": "^9.5.1",
     "dotenv": "^17.2.3",
+    "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "form-data": "^4.0.5",
     "fs-extra": "^11.2.0",
@@ -27,6 +31,7 @@
     "multer": "^1.4.5-lts.1",
     "openai": "^4.28.0",
     "pdf-parse": "^1.1.1",
+    "pdfkit": "^0.17.2",
     "uuid": "^9.0.1"
   }
 }

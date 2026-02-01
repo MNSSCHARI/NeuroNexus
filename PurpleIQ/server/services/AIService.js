@@ -10,15 +10,146 @@ const {
   NetworkError,
   classifyError
 } = require('../utils/AIErrors');
+const {
+  TEST_CASE_GENERATION_TEMPLATE,
+  BUG_REPORT_TEMPLATE,
+  TEST_PLAN_TEMPLATE,
+  AUTOMATION_SUGGESTION_TEMPLATE
+} = require('../prompts/PromptTemplates');
+const fs = require('fs-extra');
+const path = require('path');
 
 /**
  * AI Service
  * Handles LLM interactions for different providers with automatic fallback
+ * Includes demo mode for reliable hackathon presentations
  */
 class AIService {
   constructor() {
     this.clients = new Map(); // Cache clients per API key
     this.conversationHistory = new Map(); // Conversation history per project: projectId -> Array of conversation turns
+    this.demoResponses = null; // Cached demo responses
+    this.demoModeEnabled = process.env.DEMO_MODE === 'true';
+    // Self-evaluation metrics tracking
+    this.evaluationMetrics = {
+      totalEvaluations: 0,
+      averageScore: 0,
+      improvementRate: 0,
+      commonIssues: new Map(), // issue -> count
+      scoresByTaskType: new Map() // taskType -> [scores]
+    };
+    this.loadDemoResponses();
+    this.loadSettings();
+  }
+
+  /**
+   * Load settings from file (for runtime demo mode toggle)
+   */
+  async loadSettings() {
+    try {
+      const settingsPath = path.join(__dirname, '../data/settings.json');
+      if (fs.existsSync(settingsPath)) {
+        const settings = await fs.readJson(settingsPath);
+        if (typeof settings.demoMode === 'boolean') {
+          this.demoModeEnabled = settings.demoMode;
+          process.env.DEMO_MODE = settings.demoMode ? 'true' : 'false';
+        }
+      }
+    } catch (error) {
+      console.warn('⚠️  Could not load settings:', error.message);
+    }
+  }
+
+  /**
+   * Load demo responses from JSON file
+   */
+  async loadDemoResponses() {
+    try {
+      const demoPath = path.join(__dirname, '../data/demo-responses.json');
+      if (fs.existsSync(demoPath)) {
+        this.demoResponses = await fs.readJson(demoPath);
+        console.log('✅ Demo responses loaded successfully');
+      } else {
+        console.warn('⚠️  Demo responses file not found, demo mode will not work');
+      }
+    } catch (error) {
+      console.error('❌ Error loading demo responses:', error.message);
+    }
+  }
+
+  /**
+   * Check if message matches demo pattern and return demo response
+   * @param {string} message - User message
+   * @param {string} intent - Detected intent
+   * @returns {Object|null} Demo response or null
+   */
+  getDemoResponse(message, intent) {
+    if (!this.demoModeEnabled || !this.demoResponses) {
+      return null;
+    }
+
+    const messageLower = message.toLowerCase();
+
+    // Test case generation patterns
+    if (intent === AIService.INTENT_TYPES.TEST_CASE_GENERATION) {
+      if (messageLower.includes('login') || messageLower.includes('authentication') || messageLower.includes('sign in')) {
+        return this.demoResponses.test_cases.login_module;
+      } else if (messageLower.includes('payment') || messageLower.includes('checkout') || messageLower.includes('transaction')) {
+        return this.demoResponses.test_cases.payment_flow;
+      } else if (messageLower.includes('register') || messageLower.includes('registration') || messageLower.includes('sign up')) {
+        return this.demoResponses.test_cases.user_registration;
+      }
+    }
+
+    // Bug report patterns
+    if (intent === AIService.INTENT_TYPES.BUG_REPORT_FORMATTING) {
+      if (messageLower.includes('login') || messageLower.includes('button') || messageLower.includes('mobile')) {
+        return this.demoResponses.bug_reports.sample_1;
+      } else if (messageLower.includes('payment') || messageLower.includes('checkout') || messageLower.includes('silent')) {
+        return this.demoResponses.bug_reports.sample_2;
+      }
+    }
+
+    // Test plan patterns
+    if (intent === AIService.INTENT_TYPES.TEST_PLAN_CREATION) {
+      if (messageLower.includes('payment') || messageLower.includes('e-commerce') || messageLower.includes('transaction')) {
+        return this.demoResponses.test_plans.sample_1;
+      }
+    }
+
+    // Automation suggestion patterns
+    if (intent === AIService.INTENT_TYPES.AUTOMATION_SUGGESTION) {
+      if (messageLower.includes('login') || messageLower.includes('payment') || messageLower.includes('automation')) {
+        return this.demoResponses.automation_suggestions.sample_1;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Simulate API delay for demo mode
+   * @param {number} ms - Milliseconds to delay (default 2000)
+   */
+  async simulateDelay(ms = 2000) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Get workflow name from intent
+   * @param {string} intent - Intent type
+   * @returns {string} Workflow name
+   */
+  getWorkflowName(intent) {
+    const workflowMap = {
+      [AIService.INTENT_TYPES.TEST_CASE_GENERATION]: 'Test Case Generation',
+      [AIService.INTENT_TYPES.BUG_REPORT_FORMATTING]: 'Bug Report Formatting',
+      [AIService.INTENT_TYPES.TEST_PLAN_CREATION]: 'Test Plan Creation',
+      [AIService.INTENT_TYPES.AUTOMATION_SUGGESTION]: 'Automation Suggestion',
+      [AIService.INTENT_TYPES.DOCUMENT_ANALYSIS]: 'Document Analysis',
+      [AIService.INTENT_TYPES.GENERAL_QA_QUESTION]: 'General QA Answer'
+    };
+    return workflowMap[intent] || 'Unknown Workflow';
   }
 
   /**
@@ -562,9 +693,11 @@ Respond with ONLY the category name (e.g., "TEST_CASE_GENERATION"). No explanati
    * @param {string} retrievedContext - Context from RAG search
    * @param {string} aiModel - AI model to use
    * @param {string} apiKey - API key
+   * @param {Object} projectInfo - Project information (optional: projectName, domain, techStack, teamStandards)
+   * @param {Array} conversationHistory - Previous conversation turns (optional)
    * @returns {Promise<{testCases: Array, summary: string, coverageAnalysis: Object, qualityScore: number}>}
    */
-  async generateTestCasesWorkflow(message, projectId, retrievedContext, aiModel, apiKey) {
+  async generateTestCasesWorkflow(message, projectId, retrievedContext, aiModel, apiKey, projectInfo = {}, conversationHistory = []) {
     console.log('\n🧪 TEST CASE GENERATION WORKFLOW - Starting multi-step process...');
     
     // STEP 1: Analyze user request
@@ -639,59 +772,20 @@ Respond in structured format with clear sections for each category.`;
     
     console.log(`   ✅ Extracted ${extractedInfo.length} characters of key information`);
 
-    // STEP 3: Generate comprehensive test cases
-    console.log('📋 Step 3: Generating comprehensive test cases...');
+    // STEP 3: Generate comprehensive test cases using improved prompt template
+    console.log('📋 Step 3: Generating comprehensive test cases with enhanced prompt...');
     const modulePrefix = (analysis.moduleName || 'FEATURE').toUpperCase().replace(/[^A-Z0-9]/g, '_').substring(0, 10);
     
-    const generationPrompt = `You are PurpleIQ, an expert QA test designer. Generate comprehensive test cases based on the following information.
-
-ANALYSIS:
-- Module/Feature: ${analysis.moduleName || 'General Feature'}
-- Requirements: ${JSON.stringify(analysis.requirements || [])}
-- Constraints: ${JSON.stringify(analysis.constraints || [])}
-
-EXTRACTED INFORMATION:
-${extractedInfo}
-
-REQUIREMENTS FOR TEST CASES:
-1. Generate MINIMUM 10 test cases (aim for 15-20 for comprehensive coverage)
-2. Each test case MUST include:
-   - Test Case ID (format: TC_${modulePrefix}_001, TC_${modulePrefix}_002, etc.)
-   - Description (clear, concise)
-   - Preconditions (what must be true before test)
-   - Detailed steps (numbered: 1., 2., 3., etc.)
-   - Expected results (what should happen)
-   - Priority (High/Medium/Low)
-   - Type (Positive/Negative/Edge Case)
-
-3. Coverage requirements:
-   - At least 40% Positive test cases (happy path scenarios)
-   - At least 30% Negative test cases (error scenarios, invalid inputs)
-   - At least 30% Edge Case test cases (boundary conditions, unusual scenarios)
-
-4. Test cases should cover:
-   - All user flows mentioned
-   - All business rules
-   - All acceptance criteria
-   - All edge cases from PRD
-   - Error handling scenarios
-
-Respond with ONLY a JSON object in this exact format:
-{
-  "testCases": [
-    {
-      "testCaseId": "TC_${modulePrefix}_001",
-      "description": "Test case description",
-      "preconditions": ["precondition 1", "precondition 2"],
-      "steps": ["Step 1", "Step 2", "Step 3"],
-      "expectedResults": "Expected result description",
-      "priority": "High",
-      "type": "Positive"
-    }
-  ]
-}
-
-IMPORTANT: Return ONLY valid JSON, no markdown, no explanations, just the JSON object.`;
+    // Use the new prompt template with best practices
+    const generationPrompt = TEST_CASE_GENERATION_TEMPLATE.build({
+      projectInfo: projectInfo,
+      retrievedContext: extractedInfo, // Use extracted info as context
+      conversationHistory: conversationHistory,
+      moduleName: analysis.moduleName || 'Feature',
+      requirements: analysis.requirements || [],
+      constraints: analysis.constraints || [],
+      userRequest: message
+    });
 
     let testCasesData;
     let attempts = 0;
@@ -773,14 +867,14 @@ Please regenerate test cases addressing these issues. Ensure:
     console.log('📋 Step 6: Formatting output...');
     const markdownTable = this.formatTestCasesAsMarkdown(testCases);
 
-    // STEP 7: Calculate quality score
-    const qualityScore = this.calculateQualityScore(testCases, validation);
+    // STEP 7: Calculate initial quality score
+    const initialQualityScore = this.calculateQualityScore(testCases, validation);
 
-    // Prepare summary
-    const summary = this.generateTestCasesSummary(testCases, analysis, validation, qualityScore);
+    // Prepare initial summary
+    const initialSummary = this.generateTestCasesSummary(testCases, analysis, validation, initialQualityScore);
 
-    // Coverage analysis
-    const coverageAnalysis = {
+    // Initial coverage analysis
+    const initialCoverageAnalysis = {
       total: testCases.length,
       positive: validation.coverage.positive,
       negative: validation.coverage.negative,
@@ -793,16 +887,166 @@ Please regenerate test cases addressing these issues. Ensure:
       lowPriority: testCases.filter(tc => tc.priority === 'Low').length
     };
 
-    console.log(`✅ Workflow complete! Quality Score: ${qualityScore}/10`);
+    // STEP 8: AI Self-Evaluation and Improvement Loop
+    console.log('📋 Step 8: AI Self-Evaluation...');
+    let finalTestCases = testCases;
+    let finalMarkdownTable = markdownTable;
+    let finalSummary = initialSummary;
+    let finalCoverageAnalysis = initialCoverageAnalysis;
+    let finalQualityScore = initialQualityScore;
+    let evaluationNotes = '';
+    let iterationsNeeded = 0;
 
-    // Return structured object
-    return {
+    const testCasesOutput = {
       testCases: testCases,
+      summary: initialSummary,
       markdownTable: markdownTable,
-      summary: summary,
-      coverageAnalysis: coverageAnalysis,
-      qualityScore: qualityScore,
-      analysis: analysis
+      coverageAnalysis: initialCoverageAnalysis,
+      qualityScore: initialQualityScore
+    };
+
+    // Perform self-evaluation
+    let evaluation = await this.selfEvaluate(
+      testCasesOutput,
+      AIService.TASK_TYPES.TEST_CASES,
+      aiModel,
+      apiKey,
+      retrievedContext || ''
+    );
+
+    finalQualityScore = evaluation.score;
+    evaluationNotes = evaluation.critique;
+
+    // Improvement loop (max 2 iterations)
+    const maxImprovementIterations = 2;
+    let improvementIteration = 0;
+
+    while (evaluation.score < 7.0 && improvementIteration < maxImprovementIterations) {
+      improvementIteration++;
+      iterationsNeeded = improvementIteration;
+      
+      console.log(`\n🔄 IMPROVEMENT ITERATION ${improvementIteration}/${maxImprovementIterations}`);
+      console.log(`   Current score: ${evaluation.score}/10 (target: ≥7.0)`);
+      console.log(`   Issues identified: ${evaluation.weaknesses.length}`);
+      console.log(`   Suggestions: ${evaluation.suggestions.length}`);
+
+      // Build improvement prompt
+      const improvementPrompt = `${generationPrompt}
+
+SELF-EVALUATION FEEDBACK:
+Quality Score: ${evaluation.score}/10
+
+CRITIQUE:
+${evaluation.critique}
+
+WEAKNESSES IDENTIFIED:
+${evaluation.weaknesses.map(w => `- ${w}`).join('\n')}
+
+IMPROVEMENT SUGGESTIONS:
+${evaluation.suggestions.map(s => `- ${s}`).join('\n')}
+
+Please regenerate the test cases addressing ALL the issues and suggestions above. Ensure:
+- Quality score improves to at least 7.0
+- All weaknesses are addressed
+- All suggestions are implemented
+- Maintain or improve existing strengths`;
+
+      try {
+        const improvedResult = await this.generateAnswer(aiModel, apiKey, retrievedContext || '', improvementPrompt, {
+          enableFallback: true
+        });
+
+        const jsonMatch = improvedResult.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const improvedData = JSON.parse(jsonMatch[0]);
+          const improvedTestCases = improvedData.testCases || [];
+
+          if (improvedTestCases.length > 0) {
+            finalTestCases = improvedTestCases;
+            finalMarkdownTable = this.formatTestCasesAsMarkdown(finalTestCases);
+            const improvedValidation = this.validateTestCases(finalTestCases, analysis.moduleName || 'Feature');
+            finalQualityScore = this.calculateQualityScore(finalTestCases, improvedValidation);
+            finalSummary = this.generateTestCasesSummary(finalTestCases, analysis, improvedValidation, finalQualityScore);
+            finalCoverageAnalysis = {
+              total: finalTestCases.length,
+              positive: improvedValidation.coverage.positive,
+              negative: improvedValidation.coverage.negative,
+              edgeCases: improvedValidation.coverage.edgeCases,
+              positivePercent: improvedValidation.coverage.positivePercent,
+              negativePercent: improvedValidation.coverage.negativePercent,
+              edgeCasesPercent: improvedValidation.coverage.edgeCasesPercent,
+              highPriority: finalTestCases.filter(tc => tc.priority === 'High').length,
+              mediumPriority: finalTestCases.filter(tc => tc.priority === 'Medium').length,
+              lowPriority: finalTestCases.filter(tc => tc.priority === 'Low').length
+            };
+
+            // Re-evaluate improved output
+            const improvedOutput = {
+              testCases: finalTestCases,
+              summary: finalSummary,
+              markdownTable: finalMarkdownTable,
+              coverageAnalysis: finalCoverageAnalysis,
+              qualityScore: finalQualityScore
+            };
+
+            const reEvaluation = await this.selfEvaluate(
+              improvedOutput,
+              AIService.TASK_TYPES.TEST_CASES,
+              aiModel,
+              apiKey,
+              retrievedContext || ''
+            );
+
+            const previousScore = finalQualityScore;
+            finalQualityScore = reEvaluation.score;
+            evaluationNotes = `${evaluationNotes}\n\nAfter improvement iteration ${improvementIteration}:\n${reEvaluation.critique}`;
+
+            // Update improvement rate
+            if (reEvaluation.score > previousScore) {
+              const improvement = reEvaluation.score - previousScore;
+              const totalImprovements = this.evaluationMetrics.improvementRate * (this.evaluationMetrics.totalEvaluations - 1);
+              this.evaluationMetrics.improvementRate = (totalImprovements + improvement) / this.evaluationMetrics.totalEvaluations;
+            }
+
+            evaluation = reEvaluation; // Update for next iteration check
+
+            console.log(`   ✅ Improvement iteration ${improvementIteration} complete: Score ${finalQualityScore}/10`);
+          } else {
+            console.warn(`   ⚠️  Improvement iteration ${improvementIteration} did not produce valid test cases`);
+            break;
+          }
+        }
+      } catch (error) {
+        console.error(`   ❌ Improvement iteration ${improvementIteration} failed:`, error.message);
+        break;
+      }
+    }
+
+    if (iterationsNeeded > 0) {
+      console.log(`✅ Self-improvement complete: ${iterationsNeeded} iteration(s), final score: ${finalQualityScore}/10`);
+    }
+
+    console.log(`✅ Workflow complete! Final Quality Score: ${finalQualityScore}/10`);
+
+    // Return structured object with evaluation metadata
+    return {
+      testCases: finalTestCases,
+      markdownTable: finalMarkdownTable,
+      summary: finalSummary,
+      coverageAnalysis: finalCoverageAnalysis,
+      qualityScore: finalQualityScore,
+      analysis: analysis,
+      // Self-evaluation metadata
+      evaluation: {
+        score: finalQualityScore,
+        notes: evaluationNotes,
+        strengths: evaluation.strengths,
+        weaknesses: evaluation.weaknesses,
+        suggestions: evaluation.suggestions,
+        iterationsNeeded: iterationsNeeded,
+        initialScore: initialQualityScore,
+        improvement: finalQualityScore - initialQualityScore
+      }
     };
   }
 
@@ -1052,29 +1296,21 @@ Make the bug report clear, actionable, and professional. NO placeholder text lik
    * Create test plan workflow
    * Generates comprehensive test plans and strategies
    * Includes validation and retry logic
+   * @param {string} context - Context from RAG search
+   * @param {string} userMessage - User's request
+   * @param {string} aiModel - AI model to use
+   * @param {string} apiKey - API key
+   * @param {Object} projectInfo - Project information (optional)
+   * @param {Array} conversationHistory - Previous conversation turns (optional)
    */
-  async createTestPlanWorkflow(context, userMessage, aiModel, apiKey) {
-    const systemPrompt = `You are PurpleIQ, a senior QA strategist. Create comprehensive test plans and testing strategies.
-
-Workflow:
-1. Analyze the project/feature from context
-2. Create a structured test plan including:
-   - Test Objectives
-   - Scope (in-scope and out-of-scope)
-   - Test Approach/Strategy
-   - Test Types (Functional, Non-functional, Regression, etc.)
-   - Test Environment Requirements
-   - Test Data Requirements
-   - Risk Assessment
-   - Timeline/Estimation
-   - Resource Requirements
-   - Entry/Exit Criteria
-
-Make it comprehensive, actionable, and suitable for stakeholder review. Use structured sections with headers (##) and bullet points or numbered lists. NO placeholder text like [TODO] or TBD.`;
-
-    const userPrompt = `Context from Project Documents:\n\n${context}\n\nUser Request: ${userMessage}\n\nCreate a comprehensive test plan based on the project context and user requirements.`;
-
-    const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
+  async createTestPlanWorkflow(context, userMessage, aiModel, apiKey, projectInfo = {}, conversationHistory = []) {
+    // Use the new prompt template with best practices
+    const fullPrompt = TEST_PLAN_TEMPLATE.build({
+      projectInfo: projectInfo,
+      retrievedContext: context,
+      conversationHistory: conversationHistory,
+      userMessage: userMessage
+    });
 
     // Use validation and retry
     const generateFunction = async (prompt) => {
@@ -1102,26 +1338,21 @@ Make it comprehensive, actionable, and suitable for stakeholder review. Use stru
    * Automation suggestion workflow
    * Provides automation strategies and implementation suggestions
    * Includes validation and retry logic
+   * @param {string} context - Context from RAG search
+   * @param {string} userMessage - User's request
+   * @param {string} aiModel - AI model to use
+   * @param {string} apiKey - API key
+   * @param {Object} projectInfo - Project information (optional)
+   * @param {Array} conversationHistory - Previous conversation turns (optional)
    */
-  async suggestAutomationWorkflow(context, userMessage, aiModel, apiKey) {
-    const systemPrompt = `You are PurpleIQ, an automation testing expert. Provide automation strategies and suggestions.
-
-Workflow:
-1. Analyze the feature/requirement from context
-2. Identify automation opportunities
-3. Suggest automation approach including:
-   - Which tests should be automated (and why)
-   - Automation framework recommendations (Playwright, Selenium, Cypress, etc.)
-   - Test structure and organization
-   - Sample automation code/scripts (use code blocks with \`\`\`)
-   - Best practices
-   - Maintenance strategy
-
-Provide practical, actionable automation advice with code examples. Include at least 3-5 specific suggestions. NO placeholder text like [TODO] or TBD.`;
-
-    const userPrompt = `Context from Project Documents:\n\n${context}\n\nUser Request: ${userMessage}\n\nProvide automation suggestions and strategies based on the context. Include code examples if helpful.`;
-
-    const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
+  async suggestAutomationWorkflow(context, userMessage, aiModel, apiKey, projectInfo = {}, conversationHistory = []) {
+    // Use the new prompt template with best practices
+    const fullPrompt = AUTOMATION_SUGGESTION_TEMPLATE.build({
+      projectInfo: projectInfo,
+      retrievedContext: context,
+      conversationHistory: conversationHistory,
+      userMessage: userMessage
+    });
 
     // Use validation and retry
     const generateFunction = async (prompt) => {
@@ -1894,17 +2125,80 @@ If the question can't be answered from the documents, provide general QA guidanc
       }
     }
 
-    // Step 2: Classify user intent
-    const intent = await this.classifyUserIntent(userMessage, aiModel, apiKey);
+    // Step 2: Classify user intent (with fallback)
+    let intent;
+    try {
+      intent = await this.classifyUserIntent(userMessage, aiModel, apiKey);
+    } catch (error) {
+      console.warn('⚠️  Intent classification failed, using fallback');
+      // Fallback intent classification
+      const messageLower = userMessage.toLowerCase();
+      if (messageLower.includes('test case') || messageLower.includes('test scenario') || messageLower.includes('generate test')) {
+        intent = AIService.INTENT_TYPES.TEST_CASE_GENERATION;
+      } else if (messageLower.includes('bug report') || messageLower.includes('format bug')) {
+        intent = AIService.INTENT_TYPES.BUG_REPORT_FORMATTING;
+      } else if (messageLower.includes('test plan') || messageLower.includes('test strategy')) {
+        intent = AIService.INTENT_TYPES.TEST_PLAN_CREATION;
+      } else if (messageLower.includes('automation') || messageLower.includes('automate')) {
+        intent = AIService.INTENT_TYPES.AUTOMATION_SUGGESTION;
+      } else {
+        intent = AIService.INTENT_TYPES.GENERAL_QA_QUESTION;
+      }
+    }
     console.log(`🎯 Detected intent: ${intent}`);
 
-    // Step 3: Enhance context with conversation history
+    // Step 3: Check for demo mode response
+    const demoResponse = this.getDemoResponse(userMessage, intent);
+    if (demoResponse && this.demoModeEnabled) {
+      console.log('🎬 DEMO MODE ACTIVE - Using pre-generated demo response');
+      await this.simulateDelay(2000); // 2-second delay to simulate API call
+      
+      // Format demo response based on intent
+      let answer;
+      let metadata = null;
+      
+      if (intent === AIService.INTENT_TYPES.TEST_CASE_GENERATION && demoResponse.testCases) {
+        // Format test cases response
+        answer = `${demoResponse.summary || ''}\n\n${demoResponse.markdownTable || ''}`;
+        metadata = {
+          testCases: demoResponse.testCases,
+          coverageAnalysis: {
+            total: demoResponse.testCases.length,
+            positive: demoResponse.testCases.filter(tc => tc.type === 'Positive').length,
+            negative: demoResponse.testCases.filter(tc => tc.type === 'Negative').length,
+            edgeCases: demoResponse.testCases.filter(tc => tc.type === 'Edge Case').length
+          },
+          qualityScore: 9.0,
+          isDemo: true
+        };
+      } else if (intent === AIService.INTENT_TYPES.BUG_REPORT_FORMATTING && demoResponse.title) {
+        // Format bug report response
+        answer = `### Title/Summary\n${demoResponse.title}\n\n### Description\n${demoResponse.description}\n\n### Steps to Reproduce\n${demoResponse.steps.map((step, i) => `${i + 1}. ${step}`).join('\n')}\n\n### Expected Behavior\n${demoResponse.expectedBehavior}\n\n### Actual Behavior\n${demoResponse.actualBehavior}\n\n### Environment\n${demoResponse.environment}\n\n### Priority/Severity\n${demoResponse.priority || demoResponse.severity}`;
+        metadata = { isDemo: true };
+      } else if (typeof demoResponse === 'string') {
+        // String response (test plan, automation)
+        answer = demoResponse;
+        metadata = { isDemo: true };
+      } else {
+        answer = JSON.stringify(demoResponse, null, 2);
+        metadata = { isDemo: true };
+      }
+
+      return {
+        answer,
+        intent,
+        workflow: this.getWorkflowName(intent),
+        metadata
+      };
+    }
+
+    // Step 4: Enhance context with conversation history
     let enhancedContext = context;
     if (conversationContext) {
       enhancedContext = `${context}\n\n${conversationContext}`;
     }
 
-    // Step 4: Route to appropriate workflow
+    // Step 5: Route to appropriate workflow (with fallback to demo)
     let answer;
     let workflowName;
     let metadata = null;
@@ -1913,12 +2207,36 @@ If the question can't be answered from the documents, provide general QA guidanc
       case AIService.INTENT_TYPES.TEST_CASE_GENERATION:
         workflowName = 'Test Case Generation';
         console.log(`🔄 Executing workflow: ${workflowName}`);
+        
+        // Get project info and conversation history for enhanced prompts
+        let projectInfo = {};
+        let conversationHistory = [];
+        if (projectId) {
+          try {
+            const projectStorage = require('../storage/ProjectStorage');
+            const project = await projectStorage.getProject(projectId);
+            if (project) {
+              projectInfo = {
+                projectName: project.projectName,
+                domain: project.domain || 'General',
+                techStack: project.techStack || 'Not specified',
+                teamStandards: project.teamStandards || 'Standard QA practices'
+              };
+            }
+            conversationHistory = this.getConversationHistory(projectId, 3);
+          } catch (err) {
+            console.warn('⚠️  Could not load project info:', err.message);
+          }
+        }
+        
         const testCasesResult = await this.generateTestCasesWorkflow(
           userMessage, 
           projectId || 'unknown', 
           enhancedContext, 
           aiModel, 
-          apiKey
+          apiKey,
+          projectInfo,
+          conversationHistory
         );
         // Format the structured result as a readable answer
         answer = `${testCasesResult.summary}\n\n${testCasesResult.markdownTable}`;
@@ -1933,19 +2251,79 @@ If the question can't be answered from the documents, provide general QA guidanc
       case AIService.INTENT_TYPES.BUG_REPORT_FORMATTING:
         workflowName = 'Bug Report Formatting';
         console.log(`🔄 Executing workflow: ${workflowName}`);
-        answer = await this.formatBugReportWorkflow(enhancedContext, userMessage, aiModel, apiKey);
+        // Get project info and conversation history
+        let bugReportProjectInfo = {};
+        let bugReportHistory = [];
+        if (projectId) {
+          try {
+            const projectStorage = require('../storage/ProjectStorage');
+            const project = await projectStorage.getProject(projectId);
+            if (project) {
+              bugReportProjectInfo = {
+                projectName: project.projectName,
+                domain: project.domain || 'General',
+                techStack: project.techStack || 'Not specified',
+                teamStandards: project.teamStandards || 'Standard QA practices'
+              };
+            }
+            bugReportHistory = this.getConversationHistory(projectId, 3);
+          } catch (err) {
+            console.warn('⚠️  Could not load project info:', err.message);
+          }
+        }
+        answer = await this.formatBugReportWorkflow(enhancedContext, userMessage, aiModel, apiKey, bugReportProjectInfo, bugReportHistory);
         break;
 
       case AIService.INTENT_TYPES.TEST_PLAN_CREATION:
         workflowName = 'Test Plan Creation';
         console.log(`🔄 Executing workflow: ${workflowName}`);
-        answer = await this.createTestPlanWorkflow(enhancedContext, userMessage, aiModel, apiKey);
+        // Get project info and conversation history
+        let testPlanProjectInfo = {};
+        let testPlanHistory = [];
+        if (projectId) {
+          try {
+            const projectStorage = require('../storage/ProjectStorage');
+            const project = await projectStorage.getProject(projectId);
+            if (project) {
+              testPlanProjectInfo = {
+                projectName: project.projectName,
+                domain: project.domain || 'General',
+                techStack: project.techStack || 'Not specified',
+                teamStandards: project.teamStandards || 'Standard QA practices'
+              };
+            }
+            testPlanHistory = this.getConversationHistory(projectId, 3);
+          } catch (err) {
+            console.warn('⚠️  Could not load project info:', err.message);
+          }
+        }
+        answer = await this.createTestPlanWorkflow(enhancedContext, userMessage, aiModel, apiKey, testPlanProjectInfo, testPlanHistory);
         break;
 
       case AIService.INTENT_TYPES.AUTOMATION_SUGGESTION:
         workflowName = 'Automation Suggestion';
         console.log(`🔄 Executing workflow: ${workflowName}`);
-        answer = await this.suggestAutomationWorkflow(enhancedContext, userMessage, aiModel, apiKey);
+        // Get project info and conversation history
+        let automationProjectInfo = {};
+        let automationHistory = [];
+        if (projectId) {
+          try {
+            const projectStorage = require('../storage/ProjectStorage');
+            const project = await projectStorage.getProject(projectId);
+            if (project) {
+              automationProjectInfo = {
+                projectName: project.projectName,
+                domain: project.domain || 'General',
+                techStack: project.techStack || 'Not specified',
+                teamStandards: project.teamStandards || 'Standard QA practices'
+              };
+            }
+            automationHistory = this.getConversationHistory(projectId, 3);
+          } catch (err) {
+            console.warn('⚠️  Could not load project info:', err.message);
+          }
+        }
+        answer = await this.suggestAutomationWorkflow(enhancedContext, userMessage, aiModel, apiKey, automationProjectInfo, automationHistory);
         break;
 
       case AIService.INTENT_TYPES.DOCUMENT_ANALYSIS:

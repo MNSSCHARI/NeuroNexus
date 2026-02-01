@@ -114,9 +114,13 @@ app.use((req, res, next) => {
 // ========== NEW ROUTES - PROJECT MANAGEMENT ==========
 const projectsRouter = require('./routes/projects');
 const chatRouter = require('./routes/chat');
+const exportRouter = require('./routes/export');
+const settingsRouter = require('./routes/settings');
 
 app.use('/api/projects', projectsRouter);
 app.use('/api/chat', chatRouter);
+app.use('/api/export', exportRouter);
+app.use('/api/settings', settingsRouter);
 
 // ========== SYSTEM PROMPT ==========
 const SYSTEM_PROMPT = `You are PurpleIQ, an AI-powered QA assistant designed to help manual and automation testers. 

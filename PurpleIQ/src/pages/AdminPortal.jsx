@@ -12,6 +12,8 @@ function AdminPortal() {
   const [loading, setLoading] = useState(false)
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [selectedProject, setSelectedProject] = useState(null)
+  const [demoMode, setDemoMode] = useState(false)
+  const [demoModeLoading, setDemoModeLoading] = useState(false)
   
   // Form state
   const [formData, setFormData] = useState({
@@ -20,10 +22,44 @@ function AdminPortal() {
     apiKey: ''
   })
 
-  // Load projects on mount
+  // Load projects and settings on mount
   useEffect(() => {
     loadProjects()
+    loadSettings()
   }, [])
+
+  const loadSettings = async () => {
+    try {
+      const response = await fetch('http://localhost:5000/api/settings')
+      const data = await response.json()
+      setDemoMode(data.demoMode || false)
+    } catch (error) {
+      console.error('Error loading settings:', error)
+    }
+  }
+
+  const toggleDemoMode = async () => {
+    setDemoModeLoading(true)
+    try {
+      const response = await fetch('http://localhost:5000/api/settings/demo-mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: !demoMode })
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to toggle demo mode')
+      }
+
+      const data = await response.json()
+      setDemoMode(data.demoMode)
+      alert(`Demo mode ${data.demoMode ? 'enabled' : 'disabled'}`)
+    } catch (error) {
+      alert(`Error: ${error.message}`)
+    } finally {
+      setDemoModeLoading(false)
+    }
+  }
 
   const loadProjects = async () => {
     try {
@@ -131,12 +167,28 @@ function AdminPortal() {
     <div className="admin-portal">
       <div className="admin-header">
         <h1>PurpleIQ Admin Portal</h1>
-        <button 
-          className="create-project-btn"
-          onClick={() => setShowCreateForm(!showCreateForm)}
-        >
-          {showCreateForm ? 'Cancel' : '+ Create Project'}
-        </button>
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+          <div style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: '8px',
+            padding: '8px 16px',
+            backgroundColor: demoMode ? '#4CAF50' : '#f0f0f0',
+            borderRadius: '4px',
+            cursor: 'pointer'
+          }} onClick={toggleDemoMode}>
+            <span style={{ fontWeight: 'bold' }}>
+              🎬 Demo Mode: {demoMode ? 'ON' : 'OFF'}
+            </span>
+            {demoModeLoading && <span>...</span>}
+          </div>
+          <button 
+            className="create-project-btn"
+            onClick={() => setShowCreateForm(!showCreateForm)}
+          >
+            {showCreateForm ? 'Cancel' : '+ Create Project'}
+          </button>
+        </div>
       </div>
 
       {/* Create Project Form */}
