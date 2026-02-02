@@ -350,3 +350,25 @@ server/
 - Filenames are sanitized to remove special characters
 - File sizes are limited by Express body parser (default 50MB)
 
+
+
+
+🤔 Questions About Your Hackathon Submission:
+1. Hackathon Details
+What's the name of the hackathon you're submitting to?
+Are there specific judging criteria or categories (e.g., innovation, technical complexity, business impact)?
+Is there a word/page limit for the submission document?
+What format do they prefer (PDF, DOCX, Markdown)?
+2. Unique Value Proposition
+What do you consider the most innovative feature of PurpleIQ compared to existing QA tools?
+Who is your target user (QA engineers, developers, product teams)?
+What specific problem does PurpleIQ solve that other AI tools don't?
+3. Technical Achievements
+Are there any specific technical challenges you overcame that you want to highlight?
+Do you want to emphasize the AI agent aspects (self-evaluation, multi-provider fallback, contextual memory)?
+4. Demo & Results
+Do you have any metrics or results from testing? (e.g., "Generated 1000+ test cases", "Reduced QA time by X%")
+What's your best demo scenario that you want to highlight in the document?
+5. Future Vision
+What's your vision for PurpleIQ beyond the hackathon?
+Any planned features you want to mention as "future enhancements"?
