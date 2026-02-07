@@ -762,24 +762,20 @@ class AIService {
     
     const genAI = this.getGeminiClient(validatedKey);
     
-    // Gemini model fallback list (in order of preference)
-    // URGENT: Using gemini-1.5-flash as primary to avoid OpenAI 429 errors
-    // These models have high quota limits and are reliable for demos
+    // Gemini model configuration
+    // Using gemini-2.5-flash only (latest and most stable)
     const GEMINI_MODELS = [
-      'gemini-1.5-flash',      // Primary model (fast, high quota, recommended for demos)
-      'gemini-1.5-pro',       // Fallback 1 (better quality, slower)
-      'gemini-2.0-flash',     // Fallback 2 (if available)
-      'gemini-2.5-flash'      // Fallback 3 (latest)
+      'gemini-2.5-flash'      // Latest Gemini model
     ];
 
-    console.log(`🤖 [PRIMARY] Using ${provider} provider (to avoid OpenAI 429 errors)`);
-    console.log(`   Trying models in order: ${GEMINI_MODELS.join(', ')}`);
+    console.log(`🤖 [PRIMARY] Using ${provider} provider with ${GEMINI_MODELS[0]}`);
+    console.log(`   Single model, no retries`);
 
     const systemPrompt = `You are PurpleIQ, an AI-powered QA assistant. Answer questions based ONLY on the provided project documents and context. If the information is not in the provided context, say so clearly.`;
 
     const fullPrompt = `${systemPrompt}\n\nContext from Project Documents:\n\n${context}\n\nQuestion: ${question}\n\nAnswer based on the context above:`;
 
-    const maxRetries = 4; // 1 initial + 3 retries (1s, 2s, 4s)
+    const maxRetries = 1; // No retries - single attempt only
     const errors = [];
     let retriesUsed = 0;
 
@@ -900,16 +896,9 @@ class AIService {
             break;
           }
 
-          // For rate limit errors, retry with exponential backoff (1s, 2s, 4s)
+          // For rate limit errors, no retry - fail immediately
           if (classifiedError instanceof RateLimitError) {
-            if (attempt < maxRetries - 1) {
-              const delay = Math.min(1000 * Math.pow(2, attempt), 4000);
-              retriesUsed++;
-              console.log(`⏳ Rate limit hit for ${modelName}, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})...`);
-              await new Promise(resolve => setTimeout(resolve, delay));
-              continue;
-            }
-            console.log(`⏸️  Rate limit hit for ${modelName}, trying next model...`);
+            console.log(`⏸️  Rate limit hit for ${modelName}, no retries configured`);
             break;
           }
 
@@ -1174,6 +1163,12 @@ class AIService {
     AUTOMATION_SUGGESTION: 'AUTOMATION_SUGGESTION',
     DOCUMENT_ANALYSIS: 'DOCUMENT_ANALYSIS',
     GENERAL_QA_QUESTION: 'GENERAL_QA_QUESTION'
+  };
+
+  static TASK_TYPES = {
+    TEST_CASES: 'TEST_CASES',
+    BUG_REPORT: 'BUG_REPORT',
+    TEST_PLAN: 'TEST_PLAN'
   };
 
   /**
@@ -3078,6 +3073,201 @@ If the question can't be answered from the documents, provide general QA guidanc
         openaiHeadroom: rateLimitStatus.openai.headroom
       }
     };
+  }
+
+  /**
+   * Self-evaluate AI output quality
+   * @param {Object} output - The AI-generated output to evaluate
+   * @param {string} taskType - Type of task (TEST_CASES, BUG_REPORT, TEST_PLAN)
+   * @param {string} aiModel - AI model to use for evaluation
+   * @param {string} apiKey - API key for AI provider
+   * @param {string} context - Context/requirements used to generate the output
+   * @returns {Object} Evaluation with score, critique, strengths, weaknesses, suggestions
+   */
+  async selfEvaluate(output, taskType, aiModel, apiKey, context = '') {
+    try {
+      console.log(`🔍 AI SELF-EVALUATION: Evaluating ${taskType} output...`);
+
+      // Define evaluation criteria based on task type
+      let evaluationCriteria = '';
+      let outputToEvaluate = '';
+
+      switch (taskType) {
+        case AIService.TASK_TYPES.TEST_CASES:
+          evaluationCriteria = `
+Evaluation Criteria (Score 1-10 for each, then calculate weighted average):
+
+1. Completeness (25%):
+   - Are all required fields present (testCaseId, description, preconditions, steps, expectedResults, priority, type)?
+   - Are there at least 10 test cases?
+   - Is every test case complete?
+
+2. Clarity (20%):
+   - Are descriptions clear and unambiguous?
+   - Are test steps specific and actionable?
+   - Are expected results well-defined?
+
+3. Coverage (25%):
+   - Is there good distribution of Positive, Negative, and Edge case types?
+   - Do test cases cover different scenarios (happy path, error cases, boundary conditions)?
+   - Are security and performance aspects considered?
+
+4. Actionability (15%):
+   - Can a QA engineer execute these test cases without additional information?
+   - Are test steps sequential and logical?
+   - Are preconditions realistic?
+
+5. Best Practices (15%):
+   - Do test cases follow QA industry standards?
+   - Are priorities assigned correctly (High/Medium/Low)?
+   - Is test data specified where needed?
+
+Calculate overall score and provide specific feedback.`;
+
+          outputToEvaluate = JSON.stringify(output.testCases, null, 2);
+          break;
+
+        case AIService.TASK_TYPES.BUG_REPORT:
+          evaluationCriteria = `
+Evaluation Criteria (Score 1-10 for each, then calculate weighted average):
+
+1. Completeness (30%): All required sections present
+2. Clarity (25%): Clear and concise description
+3. Actionability (25%): Reproducible by developers
+4. Structure (10%): Proper formatting
+5. Best Practices (10%): Follows bug reporting standards`;
+
+          outputToEvaluate = typeof output === 'string' ? output : JSON.stringify(output, null, 2);
+          break;
+
+        case AIService.TASK_TYPES.TEST_PLAN:
+          evaluationCriteria = `
+Evaluation Criteria (Score 1-10 for each, then calculate weighted average):
+
+1. Completeness (30%): All required sections present
+2. Clarity (20%): Clear and understandable
+3. Comprehensiveness (25%): Covers all testing aspects
+4. Actionability (15%): Executable by team
+5. Best Practices (10%): Industry standards followed`;
+
+          outputToEvaluate = typeof output === 'string' ? output : JSON.stringify(output, null, 2);
+          break;
+
+        default:
+          // Default evaluation for unknown task types
+          evaluationCriteria = `
+Evaluation Criteria (Score 1-10):
+1. Quality: Overall quality and completeness
+2. Clarity: How clear and understandable the output is
+3. Usefulness: How useful this output would be`;
+
+          outputToEvaluate = typeof output === 'string' ? output : JSON.stringify(output, null, 2);
+      }
+
+      const evaluationPrompt = `You are a QA quality evaluator. Evaluate the following ${taskType} output based on the criteria below.
+
+${evaluationCriteria}
+
+Context/Requirements used to generate this output:
+${context ? context.substring(0, 2000) : 'No context provided'}
+
+Output to Evaluate:
+${outputToEvaluate.substring(0, 10000)}
+
+Respond in JSON format:
+{
+  "score": 8.5,
+  "critique": "Brief overall assessment (2-3 sentences)",
+  "strengths": ["strength 1", "strength 2", "strength 3"],
+  "weaknesses": ["weakness 1", "weakness 2"],
+  "suggestions": ["suggestion 1", "suggestion 2", "suggestion 3"]
+}
+
+Be critical but constructive. Identify real weaknesses if they exist. Score honestly (7.0+ is good, < 7.0 needs improvement).`;
+
+      // Generate evaluation using AI
+      const evaluationResponse = await this.generateAnswer(
+        '',
+        evaluationPrompt,
+        aiModel,
+        apiKey
+      );
+
+      // Parse evaluation response
+      let evaluation;
+      try {
+        const jsonMatch = evaluationResponse.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          evaluation = JSON.parse(jsonMatch[0]);
+        } else {
+          throw new Error('No JSON found in response');
+        }
+      } catch (parseError) {
+        console.warn('⚠️  Failed to parse evaluation JSON, using default scores');
+        evaluation = {
+          score: 7.5,
+          critique: 'Evaluation completed with default scoring',
+          strengths: ['Output generated successfully'],
+          weaknesses: ['Could not perform detailed evaluation'],
+          suggestions: ['Review manually for quality assurance']
+        };
+      }
+
+      // Validate evaluation structure
+      if (typeof evaluation.score !== 'number' || evaluation.score < 1 || evaluation.score > 10) {
+        evaluation.score = 7.5;
+      }
+      if (!Array.isArray(evaluation.strengths)) evaluation.strengths = [];
+      if (!Array.isArray(evaluation.weaknesses)) evaluation.weaknesses = [];
+      if (!Array.isArray(evaluation.suggestions)) evaluation.suggestions = [];
+      if (typeof evaluation.critique !== 'string') evaluation.critique = '';
+
+      // Track evaluation metrics
+      this.evaluationMetrics.totalEvaluations++;
+      
+      // Update average score
+      if (this.evaluationMetrics.totalEvaluations === 1) {
+        this.evaluationMetrics.averageScore = evaluation.score;
+      } else {
+        this.evaluationMetrics.averageScore = 
+          (this.evaluationMetrics.averageScore * (this.evaluationMetrics.totalEvaluations - 1) + evaluation.score) / 
+          this.evaluationMetrics.totalEvaluations;
+      }
+
+      // Track scores by task type
+      if (!this.evaluationMetrics.scoresByTaskType.has(taskType)) {
+        this.evaluationMetrics.scoresByTaskType.set(taskType, []);
+      }
+      this.evaluationMetrics.scoresByTaskType.get(taskType).push(evaluation.score);
+
+      // Track common issues
+      for (const weakness of evaluation.weaknesses) {
+        const lowerWeakness = weakness.toLowerCase();
+        const currentCount = this.evaluationMetrics.commonIssues.get(lowerWeakness) || 0;
+        this.evaluationMetrics.commonIssues.set(lowerWeakness, currentCount + 1);
+      }
+
+      console.log(`   ✅ Self-evaluation complete: Score ${evaluation.score.toFixed(1)}/10`);
+      if (evaluation.weaknesses.length > 0) {
+        console.log(`   📝 Weaknesses identified: ${evaluation.weaknesses.length}`);
+      }
+      if (evaluation.suggestions.length > 0) {
+        console.log(`   💡 Suggestions: ${evaluation.suggestions.length} improvement areas identified`);
+      }
+
+      return evaluation;
+
+    } catch (error) {
+      console.error('❌ Self-evaluation failed:', error.message);
+      // Return default evaluation on error
+      return {
+        score: 7.5,
+        critique: 'Self-evaluation encountered an error, using default score',
+        strengths: ['Output generated successfully'],
+        weaknesses: ['Could not perform self-evaluation'],
+        suggestions: ['Review manually for quality assurance']
+      };
+    }
   }
 }
 

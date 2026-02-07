@@ -6,6 +6,12 @@ uploads/
 .env
 .env.local
 
+# Jira sync output (project-specific)
+jira-user-stories.txt
+
+# CSV test cases output
+output/
+
 # Logs
 *.log
 

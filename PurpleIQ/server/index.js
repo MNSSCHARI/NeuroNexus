@@ -1,10 +1,63 @@
 const express = require('express');
 const cors = require('cors');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const path = require('path');
+const fs = require('fs').promises;
+const OpenAI = require('openai');
 const { v4: uuidv4 } = require('uuid');
 const { createRequestLogger, sanitizeMetadata } = require('./utils/logger');
 const aiService = require('./services/AIService');
 require('dotenv').config();
+
+// Master prompt for test case generation (loaded once at startup)
+const QA_MASTER_PROMPT_PATH = path.join(__dirname, 'prompts', 'QA_TEST_CASES_MASTER_PROMPT.txt');
+let QA_MASTER_PROMPT_CACHE = null;
+async function getTestCasesMasterPrompt() {
+  if (QA_MASTER_PROMPT_CACHE) return QA_MASTER_PROMPT_CACHE;
+  QA_MASTER_PROMPT_CACHE = await fs.readFile(QA_MASTER_PROMPT_PATH, 'utf8');
+  return QA_MASTER_PROMPT_CACHE;
+}
+
+/**
+ * Sanitize JSON string by removing/escaping control characters
+ */
+function sanitizeJsonString(jsonStr) {
+  // Replace control characters (except \n, \r, \t which are valid when escaped)
+  return jsonStr
+    // Remove or escape literal control characters (0x00-0x1F except \n, \r, \t)
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
+    // Fix common escape sequence issues
+    .replace(/\\(?!["\\/bfnrtu])/g, '\\\\'); // Escape backslashes not followed by valid escape chars
+}
+
+/**
+ * Attempt to fix common JSON issues
+ */
+function tryFixJson(jsonStr) {
+  try {
+    // Try 1: Remove all control characters more aggressively
+    let fixed = jsonStr.replace(/[\x00-\x1F]/g, (match) => {
+      // Keep valid escaped sequences
+      const code = match.charCodeAt(0);
+      if (code === 0x09) return '\\t'; // tab
+      if (code === 0x0A) return '\\n'; // newline
+      if (code === 0x0D) return '\\r'; // carriage return
+      return ''; // Remove other control chars
+    });
+    
+    // Try 2: Fix unescaped quotes in strings (heuristic)
+    // This is risky but can help with some cases
+    fixed = fixed.replace(/"([^"]*)":\s*"([^"]*)"/g, (match, key, value) => {
+      // Escape any unescaped quotes in the value
+      const escapedValue = value.replace(/\\"/g, '"').replace(/"/g, '\\"');
+      return `"${key}": "${escapedValue}"`;
+    });
+    
+    return fixed;
+  } catch (error) {
+    console.error('JSON fix attempt failed:', error.message);
+    return null;
+  }
+}
 
 // Initialize Express app
 const app = express();
@@ -13,41 +66,63 @@ const PORT = process.env.PORT || 5000;
 // Check if mock AI mode is enabled
 const USE_MOCK_AI = process.env.USE_MOCK_AI === 'true';
 
-// Initialize Google Gemini client (only if not using mock mode)
-let genAI = null;
+// Initialize OpenAI client (only if not using mock mode)
+let openai = null;
 if (!USE_MOCK_AI) {
-  genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY
+  });
 }
 
-// Using ONLY gemini-2.5-flash for fastest generation (no fallback retries)
-const GEMINI_MODEL = 'gemini-2.5-flash';
+// Using OpenAI GPT-4o-mini for fast, cost-effective generation
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
 /**
- * Generate content with Gemini using ONLY gemini-2.5-flash (no retries for speed)
+ * Generate content with OpenAI
  * @param {string} prompt - The prompt to send
+ * @param {boolean} jsonMode - Whether to request JSON mode
  * @returns {Promise<{result: any, usedModel: string}>}
  */
-async function generateWithGemini(prompt) {
-  if (!genAI) {
-    throw new Error('Gemini client not initialized');
+async function generateWithOpenAI(prompt, jsonMode = true) {
+  if (!openai) {
+    throw new Error('OpenAI client not initialized');
   }
 
   try {
-    console.log(`🔄 Trying model: ${GEMINI_MODEL}`);
-    const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
-    const result = await model.generateContent(prompt);
+    console.log(`🔄 Using model: ${OPENAI_MODEL}`);
     
-    console.log(`✅ Successfully used model: ${GEMINI_MODEL}`);
-    return { result, usedModel: GEMINI_MODEL };
+    const completion = await openai.chat.completions.create({
+      model: OPENAI_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content: 'You are PurpleIQ, an expert QA analyst that generates comprehensive test cases.'
+        },
+        {
+          role: 'user',
+          content: prompt
+        }
+      ],
+      temperature: 0.7,
+      response_format: jsonMode ? { type: 'json_object' } : undefined
+    });
+    
+    console.log(`✅ Successfully used model: ${OPENAI_MODEL}`);
+    return { 
+      result: completion.choices[0].message.content,
+      usedModel: OPENAI_MODEL 
+    };
   } catch (error) {
     const errorMsg = error.message || String(error);
-    console.error(`❌ ${GEMINI_MODEL} failed:`, errorMsg);
+    console.error(`❌ ${OPENAI_MODEL} failed:`, errorMsg);
     
     // Provide helpful error message
     if (errorMsg.includes('429') || errorMsg.includes('quota') || errorMsg.includes('rate limit')) {
       throw new Error(`Rate limit exceeded. Please try again in a few moments.`);
+    } else if (errorMsg.includes('401') || errorMsg.includes('invalid_api_key')) {
+      throw new Error(`Invalid OpenAI API key. Please check your configuration.`);
     } else if (errorMsg.includes('not found') || errorMsg.includes('404')) {
-      throw new Error(`Model ${GEMINI_MODEL} not available. Please check your API key.`);
+      throw new Error(`Model ${OPENAI_MODEL} not available. Please check your API key and model name.`);
     } else {
       throw new Error(`AI generation failed: ${errorMsg}`);
     }
@@ -586,7 +661,7 @@ app.post('/api/generate', async (req, res) => {
     }
 
     console.log(`Processing request - Mode: ${mode}, Input length: ${inputText.length} characters`);
-    console.log(`🤖 AI Mode: ${USE_MOCK_AI ? 'MOCK' : 'REAL (Google Gemini)'}`);
+    console.log(`🤖 AI Mode: ${USE_MOCK_AI ? 'MOCK' : 'REAL (OpenAI)'}`);
 
     let output;
 
@@ -604,12 +679,12 @@ app.post('/api/generate', async (req, res) => {
       console.log(`Mock response generated successfully in ${duration}ms`);
       
     } else {
-      // Use real Google Gemini API
-      if (!process.env.GEMINI_API_KEY) {
-        console.error('Configuration error: GEMINI_API_KEY is not set');
+      // Use real OpenAI API
+      if (!process.env.OPENAI_API_KEY) {
+        console.error('Configuration error: OPENAI_API_KEY is not set');
         return res.status(500).json({
           error: 'Configuration Error',
-          message: 'Gemini API key is not configured'
+          message: 'OpenAI API key is not configured'
         });
       }
 
@@ -617,23 +692,16 @@ app.post('/api/generate', async (req, res) => {
       const userPrompt = getModePrompt(mode, inputText);
       const fullPrompt = `${SYSTEM_PROMPT}\n\n${userPrompt}`;
 
-      // Call Google Gemini API (gemini-2.5-flash only)
-      console.log('Calling Google Gemini API...');
+      // Call OpenAI API
+      console.log('Calling OpenAI API...');
       
-      const { result, usedModel } = await generateWithGemini(fullPrompt);
+      const { result, usedModel } = await generateWithOpenAI(fullPrompt, false);
       
-      const response = await result.response;
-      output = response.text();
+      output = result;
       console.log(`✅ Model used: ${usedModel}`);
 
       const duration = Date.now() - startTime;
       console.log(`Request completed successfully in ${duration}ms`);
-      
-      // Log token usage if available
-      if (result.response.usageMetadata) {
-        const usage = result.response.usageMetadata;
-        console.log(`Tokens used: ${usage.totalTokenCount} (prompt: ${usage.promptTokenCount}, completion: ${usage.candidatesTokenCount})`);
-      }
     }
 
     // Return response
@@ -674,7 +742,7 @@ app.post('/api/generate', async (req, res) => {
       });
     }
 
-    // Handle Google Gemini API errors (only if not using mock mode)
+    // Handle OpenAI API errors (only if not using mock mode)
     if (!USE_MOCK_AI) {
       // Check for quota/rate limit errors specifically
       const errorMessage = error.message || String(error);
@@ -690,16 +758,16 @@ app.post('/api/generate', async (req, res) => {
         
         return res.status(429).json({
           error: 'Rate Limit Exceeded',
-          message: `Gemini API quota exceeded. ${retryAfter ? `Please retry in ${retryAfter} seconds.` : 'Please try again later.'}`,
+          message: `OpenAI API quota exceeded. ${retryAfter ? `Please retry in ${retryAfter} seconds.` : 'Please try again later.'}`,
           suggestion: 'You can enable MOCK AI mode by setting USE_MOCK_AI=true in your .env file to continue testing without API calls.',
           retryAfter: retryAfter,
           timestamp: new Date().toISOString()
         });
       }
       
-      // Classify and handle other Gemini-specific errors
-      const classifiedError = AIErrors.classifyError(error, 'Gemini', { 
-        triedModels: [GEMINI_MODEL] 
+      // Classify and handle other OpenAI-specific errors
+      const classifiedError = AIErrors.classifyError(error, 'OpenAI', { 
+        triedModels: [OPENAI_MODEL] 
       });
       
       if (classifiedError instanceof AIErrors.AIServiceError) {
@@ -715,6 +783,131 @@ app.post('/api/generate', async (req, res) => {
   }
 });
 
+// ========== POST /api/test-cases/from-story (agentic: one user story → JSON test cases) ==========
+app.post('/api/test-cases/from-story', async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const { summary, issueKey, projectKey, projectDescription, description } = req.body || {};
+
+    if (!summary || !issueKey) {
+      return res.status(400).json({
+        error: 'Bad Request',
+        message: 'summary and issueKey are required. Optionally: projectKey, projectDescription, description.'
+      });
+    }
+
+    const context = [
+      `Summary: ${String(summary).trim()}`,
+      `Issue key: ${String(issueKey).trim()}`,
+      `Project key: ${projectKey != null && projectKey !== '' ? String(projectKey).trim() : 'N/A'}`,
+      `Project description: ${projectDescription != null && projectDescription !== '' ? String(projectDescription).trim() : 'N/A'}`,
+      `Description:\n${description != null && description !== '' ? String(description).trim() : 'No description provided.'}`
+    ].join('\n');
+
+    const masterPrompt = await getTestCasesMasterPrompt();
+    const fullPrompt = `${masterPrompt}\n\n--- USER STORY INPUT ---\n${context}\n\n--- RESPOND WITH JSON ONLY ---`;
+
+    if (USE_MOCK_AI) {
+      await new Promise(r => setTimeout(r, 500));
+      const mockTestCases = [
+        {
+          testCaseId: 'TC-001',
+          summary: 'Verify requirement is met (mock)',
+          description: 'Mock test case for development.',
+          precondition: 'System is available',
+          testScenario: 'Basic scenario',
+          testSteps: ['Step 1', 'Step 2'],
+          expectedResult: 'Expected outcome',
+          canBeAutomated: 'Yes',
+          priority: 'High'
+        }
+      ];
+      return res.json({
+        issueKey: String(issueKey).trim(),
+        summary: String(summary).trim(),
+        projectKey: projectKey != null ? String(projectKey).trim() : null,
+        testCases: mockTestCases
+      });
+    }
+
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(500).json({
+        error: 'Configuration Error',
+        message: 'OPENAI_API_KEY is not set'
+      });
+    }
+
+    const { result } = await generateWithOpenAI(fullPrompt, true);
+    const rawText = result;
+    let jsonStr = rawText.trim();
+    
+    // Remove markdown code blocks if present
+    const codeBlockMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlockMatch) jsonStr = codeBlockMatch[1].trim();
+    
+    // Sanitize JSON string (remove/escape control characters)
+    jsonStr = sanitizeJsonString(jsonStr);
+    
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonStr);
+    } catch (parseError) {
+      console.error(`JSON parse error for ${issueKey}:`, parseError.message);
+      console.error('Raw response preview:', rawText.slice(0, 500));
+      
+      // Try to fix common issues and retry
+      const fixedJson = tryFixJson(jsonStr);
+      if (fixedJson) {
+        try {
+          parsed = JSON.parse(fixedJson);
+          console.log(`✅ Successfully recovered JSON for ${issueKey}`);
+        } catch (retryError) {
+          throw new Error(`Failed to parse JSON even after sanitization: ${parseError.message}`);
+        }
+      } else {
+        throw parseError;
+      }
+    }
+
+    if (!parsed.testCases || !Array.isArray(parsed.testCases)) {
+      return res.status(502).json({
+        error: 'Invalid AI Response',
+        message: 'AI did not return testCases array.',
+        rawPreview: rawText.slice(0, 200)
+      });
+    }
+
+    const apiResponse = {
+      issueKey: parsed.issueKey || issueKey,
+      summary: parsed.summary || summary,
+      projectKey: parsed.projectKey != null ? parsed.projectKey : projectKey,
+      testCases: parsed.testCases
+    };
+
+    console.log(`Test cases generated for ${apiResponse.issueKey}: ${apiResponse.testCases.length} cases (${Date.now() - startTime}ms)`);
+    res.json(apiResponse);
+  } catch (err) {
+    const duration = Date.now() - startTime;
+    console.error('Test cases from-story error:', err.message);
+    if (err instanceof SyntaxError) {
+      return res.status(502).json({
+        error: 'Invalid JSON from AI',
+        message: err.message
+      });
+    }
+    if (err.message && (err.message.includes('429') || err.message.includes('quota') || err.message.includes('rate limit'))) {
+      return res.status(429).json({
+        error: 'Rate Limit Exceeded',
+        message: err.message
+      });
+    }
+    res.status(500).json({
+      error: 'Internal Server Error',
+      message: err.message || 'Failed to generate test cases.'
+    });
+  }
+});
+
 // ========== HEALTH CHECK ==========
 const healthCheckService = require('./services/HealthCheckService');
 
@@ -723,7 +916,7 @@ app.get('/health', (req, res) => {
     status: 'ok',
     timestamp: new Date().toISOString(),
     service: 'PurpleIQ API',
-    aiMode: USE_MOCK_AI ? 'MOCK' : 'REAL (Google Gemini)'
+    aiMode: USE_MOCK_AI ? 'MOCK' : 'REAL (OpenAI)'
   });
 });
 
@@ -788,22 +981,21 @@ app.listen(PORT, () => {
   console.log(`🚀 PurpleIQ API Server is running`);
   console.log(`📍 Port: ${PORT}`);
   console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🤖 AI Mode: ${USE_MOCK_AI ? '🔧 MOCK AI (No API calls)' : '✨ REAL AI (Google Gemini)'}`);
+  console.log(`🤖 AI Mode: ${USE_MOCK_AI ? '🔧 MOCK AI (No API calls)' : '✨ REAL AI (OpenAI)'}`);
   if (!USE_MOCK_AI) {
     console.log(`💡 Tip: If you hit quota limits, set USE_MOCK_AI=true in .env to use mock responses`);
-    console.log(`🔑 Gemini API Key: ${process.env.GEMINI_API_KEY ? '✅ Configured' : '❌ Not configured'}`);
+    console.log(`🔑 OpenAI API Key: ${process.env.OPENAI_API_KEY ? '✅ Configured' : '❌ Not configured'}`);
+    console.log(`🤖 OpenAI Model: ${OPENAI_MODEL}`);
   }
   console.log('='.repeat(80));
-  console.log(`\n🔧 CRITICAL CONFIGURATION (to avoid OpenAI 429 errors):`);
-  console.log(`   ✅ PRIMARY: Gemini (gemini-1.5-flash) for ALL chat/generation`);
-  console.log(`   ✅ EMBEDDINGS: Gemini ONLY (OpenAI removed)`);
-  console.log(`   ✅ FALLBACK: OpenAI GPT models (if Gemini fails for chat only)`);
-  console.log(`   🚫 OpenAI embeddings: REMOVED (to prevent 429 errors)`);
-  console.log(`\n💡 New projects default to 'gemini' model`);
-  console.log(`   GEMINI_API_KEY required for embeddings`);
+  console.log(`\n🔧 AI CONFIGURATION:`);
+  console.log(`   ✅ PRIMARY: OpenAI (${OPENAI_MODEL}) for ALL operations`);
+  console.log(`   ✅ Test case generation with structured JSON output`);
+  console.log(`   ✅ JSON error recovery and sanitization enabled`);
   console.log('='.repeat(80));
   console.log(`Available endpoints:`);
   console.log(`  POST http://localhost:${PORT}/api/generate (legacy)`);
+  console.log(`  POST http://localhost:${PORT}/api/test-cases/from-story (agentic: user story → JSON test cases)`);
   console.log(`  GET  http://localhost:${PORT}/api/projects`);
   console.log(`  POST http://localhost:${PORT}/api/projects`);
   console.log(`  POST http://localhost:${PORT}/api/projects/:id/documents`);

@@ -1,0 +1,92 @@
+QA Master Prompt: Generating Test Cases from User Stories
+
+Goal:
+Create detailed, traceable, and prioritized test cases, ensuring 100% test coverage of all functional and non-functional requirements derived from user stories and their acceptance criteria.
+
+--- INPUT YOU WILL RECEIVE ---
+You will receive a single user story in the following structure:
+- Summary: Title of the user story
+- Issue key: Jira issue ID (e.g. WP1-1510)
+- Project key: Project identifier (e.g. WP1)
+- Project description: High-level project context (if provided)
+- Description: The user story body including acceptance criteria and business rules
+
+Use both Project description (for context) and Description (for requirements) to generate comprehensive test cases. Link every test case to the Issue key.
+
+--- OUTPUT FORMAT: JSON ONLY ---
+You MUST respond with ONLY a valid JSON object. No markdown, no code fences, no explanation before or after.
+
+CRITICAL JSON RULES:
+- Escape all special characters in strings: use \" for quotes, \n for newlines, \t for tabs, \\ for backslashes
+- Do NOT use literal newlines or tabs inside string values
+- Do NOT use control characters (ASCII 0-31) except properly escaped \n, \r, \t
+- Ensure all strings are properly quoted and escaped
+
+The JSON must match this structure exactly:
+
+{
+  "issueKey": "<same as input Issue key>",
+  "summary": "<same as input Summary>",
+  "projectKey": "<same as input Project key>",
+  "testCases": [
+    {
+      "testCaseId": "TC-001",
+      "summary": "Short title of the test case",
+      "priority": "High",
+      "description": "What this test case verifies",
+      "precondition": "Conditions that must be true before execution",
+      "testScenario": "Context or scenario for the test",
+      "testSteps": ["Step 1", "Step 2", "Step 3"],
+      "expectedResult": "What should happen when the test passes",
+      "canBeAutomated": "Yes"
+    }
+  ]
+}
+
+Rules for each test case (field order MUST match the JSON structure above):
+- testCaseId: Sequential (TC-001, TC-002, ...). Unique within this response.
+- summary: One clear line; actionable.
+- priority: Exactly "High", "Medium", or "Low" based on risk and usage frequency.
+- description: Brief explanation of what is being verified.
+- precondition: State of system/user before test (e.g. "User is logged in").
+- testScenario: Scenario or context (e.g. "Valid login attempt").
+- testSteps: Array of ordered steps; each step one actionable sentence.
+- expectedResult: Single clear outcome when test passes.
+- canBeAutomated: Exactly "Yes" or "No".
+
+--- COVERAGE CRITERIA (apply where relevant) ---
+
+UI/UX:
+- Ensure UI design matches design specs or mockups.
+- Check consistency of colors, fonts, icons, spacing, alignments.
+- Validate interactive elements (buttons, toggles, forms) for expected feedback.
+- Verify intuitive navigation, logical flow, minimal user confusion.
+- Evaluate error messages, tooltips, loading indicators.
+- Test hover effects, focus indicators, transitions/animations if applicable.
+
+Functional:
+- Cover every acceptance criterion in the user story.
+- Include positive and negative paths for each user interaction.
+- Validate user flows and role-based access as applicable.
+- Apply: Equivalence Partitioning, Boundary Value Analysis, Decision Tables, State Transition Testing, Error Guessing.
+
+Compatibility & Responsive:
+- Devices (Phone, Tablet, Desktop); Browsers (Chrome, Firefox, Safari, Edge); OS (iOS, Android, Windows, macOS, Linux).
+- Validate layout and interaction on small, medium, large screen sizes.
+
+Network (Mobile only):
+- Validate under strong, weak, and no network conditions.
+
+Non-Functional:
+- Performance: load times, API latency, user flow under load.
+- Security: XSS, SQL Injection, Authentication/Authorization, session timeout.
+- Usability: navigation, clarity, accessibility of controls/messages.
+- Accessibility: WCAG 2.1 (screen reader, color contrast, keyboard navigation).
+
+Additional:
+- Link every test case to the User Story Issue key (already in JSON).
+- Maintain full coverage of acceptance criteria.
+- Priority High/Medium/Low by risk and usage frequency.
+- Steps must be clear, reusable, maintainable, and actionable.
+
+REMEMBER: Return ONLY the JSON object. No other text.

@@ -85,9 +85,9 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // DEFAULT TO GEMINI (to avoid OpenAI 429 errors)
+    // DEFAULT TO OPENAI
     // Only validate if aiModel is explicitly provided
-    const selectedModel = (aiModel || 'gemini').toLowerCase();
+    const selectedModel = (aiModel || 'openai').toLowerCase();
     
     if (aiModel && !['openai', 'gemini', 'claude'].includes(selectedModel)) {
       return res.status(400).json({ 
